@@ -28,7 +28,7 @@ jaxtyping
 flax
 optax==0.1.7
 optax
-jax[tpu]==0.4.23
+jax==0.4.23
 orbax==0.1.9
 distrax==0.1.4
 chex==0.1.82
