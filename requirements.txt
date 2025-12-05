@@ -15,7 +15,7 @@ libtmux
 threadpoolctl==3.1.0
 plotly
 tabulate
-tensorflow==2.15.0
+tensorflow
 tensorflow-cpu
 tensorflow-probability==0.22.0
 tensorflow-datasets
