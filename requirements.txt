@@ -32,5 +32,6 @@ jax==0.4.23
 orbax==0.1.9
 distrax==0.1.4
 chex==0.1.82
+jaxlib==0.4.23
 
 typing_extensions
