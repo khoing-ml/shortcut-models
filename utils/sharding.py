@@ -53,7 +53,7 @@ def create_sharding(shard_type, train_state_shape=None):
                 return jax.make_array_from_single_device_arrays(x_shape, data_sharding, x)
         if len(args) == 1:
             return _shard_data(args[0])
-        return jax.tree_map(_shard_data, args)
+        return jax.tree_util.tree_map(_shard_data, args)
 
     # Collect a multi-host array onto the local device.
     def global_to_local(x):
