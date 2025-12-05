@@ -1,6 +1,6 @@
 numba
 opt-einsum
-numpy
+numpy   
 absl-py
 termcolor
 matplotlib
@@ -34,9 +34,9 @@ distrax==0.1.4
 # chex==0.1.82
 chex
 
-jax[tpu]==0.7.1
+jax[tpu]=
 ml_dtypes
-protobuf==3.20.3
-typeguard
+protobuf>=5.28.0
+typeguard<4.6.0
 matplotlib-inline
 typing_extensions
