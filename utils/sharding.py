@@ -66,4 +66,4 @@ def create_sharding(shard_type, train_state_shape=None):
 def all_gather(*args):
     if len(args) == 1:
         return jax.experimental.multihost_utils.process_allgather(args[0])
-    return jax.tree_map(jax.experimental.multihost_utils.process_allgather, args)
+    return jax.tree_util.tree_map(jax.experimental.multihost_utils.process_allgather, args)

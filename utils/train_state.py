@@ -53,7 +53,7 @@ class TrainStateEma(flax.struct.PyTreeNode):
 
     # Tau should be close to 1, e.g. 0.999.
     def update_ema(self, tau):
-        new_params_ema = jax.tree_map(
+        new_params_ema = jax.tree_util.tree_map(
             lambda p, tp: p * (1-tau) + tp * tau, self.params, self.params_ema
         )
         return self.replace(params_ema=new_params_ema)
