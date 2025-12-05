@@ -25,13 +25,12 @@ scipy==1.12.0
 einops
 jaxtyping
 
-flax==0.7.4
-# optax==0.1.7
+flax==0
+optax==0.1.7
 optax
 
 orbax==0.1.9
 distrax==0.1.4
-# chex==0.1.82
-chex
-jax<0.6.0
+chex==0.1.82
 
+typing_extensions
