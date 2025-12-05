@@ -33,7 +33,7 @@ distrax==0.1.4
 chex==0.1.82
 
 
-jax[tpu]==0.8.1
+jax[tpu]>=0.7
 ml_dtypes
 protobuf==3.20.3
 typeguard
