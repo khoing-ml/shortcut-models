@@ -190,7 +190,7 @@ def eval_model(
         all_x = all_x[:, -8:]
         if jax.process_index() == 0:
             fig, axs = plt.subplots(8, 8, figsize=(30, 30))
-            for j in range(8):
+            for j in range(min(8, all_x.shape[0])):
                 for t in range(min(8, all_x.shape[1])):
                     axs[t, j].imshow(process_img(all_x[j, t]), vmin=0, vmax=1)
             d_label = 'cfg' if do_cfg else denoise_timesteps
