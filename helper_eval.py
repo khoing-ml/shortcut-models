@@ -79,9 +79,9 @@ def eval_model(
             _, info = update(train_state, train_state_teacher, batch_images_sharded, batch_labels_sharded, force_t=t, force_dt=d)
             info = jax.experimental.multihost_utils.process_allgather(info)
             if infos is None:
-                infos = jax.tree_map(lambda x: [x], info)
+                infos = jax.tree_util.tree_map(lambda x: [x], info)
             else:
-                infos = jax.tree_map(lambda x, y: y + [x], info, infos)
+                infos = jax.tree_util.tree_map(lambda x, y: y + [x], info, infos)
         time_axis = np.arange(0, 32) / 32
         axs[0, d].plot(time_axis, infos['loss'])
         axs[0, d].set_title(f"All {d}")
