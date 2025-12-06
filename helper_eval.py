@@ -44,12 +44,31 @@ def eval_model(
     eps = jax.random.normal(key, batch_images.shape)
 
     def process_img(img):
+        # Convert to numpy array for shape inspection and possible reshaping.
+        arr = np.array(img)
+
+        # If there are extra leading axes (e.g., device, per-device-batch),
+        # collapse them so we operate on a single image/latent.
+        # We assume the last dimension is channels: 4 for latents, 3 for RGB.
+        if arr.ndim > 3:
+            # Bring the last 3 dims to (h, w, c) or (lh, lw, ch)
+            tail = arr.shape[-3:]
+            arr = arr.reshape(-1, *tail)[0]
+
+        # If this is a latent (channels == 4) and we use the Stable VAE,
+        # decode it to image space.
         if FLAGS.model.use_stable_vae:
-            img = vae_decode(img[None])[0]
-        img = img * 0.5 + 0.5
-        img = jnp.clip(img, 0, 1)
-        img = np.array(img)
-        return img
+            if arr.ndim == 3 and arr.shape[-1] == 4:
+                img_decoded = vae_decode(arr[None])[0]
+            else:
+                # Fallback: try decoding whatever we have as a single batch.
+                img_decoded = vae_decode(arr[None])[0]
+            arr = img_decoded
+
+        arr = arr * 0.5 + 0.5
+        arr = jnp.clip(arr, 0, 1)
+        arr = np.array(arr)
+        return arr
         
     @partial(jax.jit, static_argnums=(5,))
     def call_model(train_state, images, t, dt, labels, use_ema=True):
