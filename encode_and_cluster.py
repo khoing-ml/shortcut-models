@@ -18,8 +18,6 @@ Outputs:
 from pathlib import Path
 import argparse
 import csv
-import shutil
-from collections import defaultdict
 
 import numpy as np
 import os
@@ -151,23 +149,6 @@ def save_results(out_dir, latents, paths, assignments, kmeans):
     return csv_path
 
 
-def dump_cluster_examples(out_dir, paths, assignments, max_per_cluster=10):
-    out = Path(out_dir)
-    examples = out / "examples"
-    examples.mkdir(exist_ok=True)
-    clusters = defaultdict(list)
-    for p, c in zip(paths, assignments):
-        if len(clusters[c]) < max_per_cluster:
-            clusters[c].append(p)
-    for c, plist in clusters.items():
-        cdir = examples / f"cluster_{c:04d}"
-        cdir.mkdir(exist_ok=True)
-        for src in plist:
-            try:
-                shutil.copy(src, cdir)
-            except Exception:
-                pass
-
 
 def parse_args():
     p = argparse.ArgumentParser()
@@ -214,7 +195,6 @@ def main():
     print("Clustering...")
     kmeans, assignments = cluster_latents(latents, n_clusters=args.n_clusters)
     csv_path = save_results(args.out_dir, latents, paths, assignments, kmeans)
-    dump_cluster_examples(args.out_dir, paths, assignments, max_per_cluster=args.max_examples)
     print(f"Saved assignments to {csv_path}")
 
 
