@@ -1,0 +1,10 @@
+Changes made on 2025-12-06:
+
+- File: helper_eval.py
+  - Change: Replaced an unconditional loop `for j in range(8):` with a bounded loop `for j in range(min(8, all_x.shape[0])):` when plotting sampled images.
+  - Reason: Prevents `IndexError` when the batch size is smaller than 8 (e.g., single-device or small-batch runs).
+  - Lines changed: plotting loop in the "Denoising at N steps" section (near building `all_x` and plotting samples).
+
+Notes:
+- This is a minimal fix to avoid out-of-bounds indexing while preserving the intended layout (up to 8 samples).
+- Recommended next step: re-run the script to confirm the IndexError is resolved and verify visual outputs in `wandb`.
