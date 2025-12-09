@@ -169,7 +169,7 @@ def get_targets(FLAGS, key, train_state, images, labels, force_t=-1, force_dt=-1
         v_u = v_t  # Original velocity
         v_s = x_1_paired - (1 - 1e-5) * x_0_paired  # Neighbor's velocity
         
-        info['locality_mode'] = 'cluster_neighborhood'
+        info['locality_mode'] = 1  # 1 = cluster_neighborhood, 0 = random_perturbation
         info['locality_valid_pairs'] = jnp.mean(valid_pair_mask.astype(jnp.float32))
         
     else:
@@ -187,7 +187,7 @@ def get_targets(FLAGS, key, train_state, images, labels, force_t=-1, force_dt=-1
         v_s = x_1 - (1 - 1e-5) * x_0_perturbed
         
         valid_pair_mask = jnp.ones(images.shape[0], dtype=bool)  # All pairs valid
-        info['locality_mode'] = 'random_perturbation'
+        info['locality_mode'] = 0  # 1 = cluster_neighborhood, 0 = random_perturbation
     
     # Store locality information for loss computation
     # The model will predict v(u_t, t) and v(s_t, t), and we'll add a consistency term
