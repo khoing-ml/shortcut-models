@@ -1,39 +1,48 @@
-numba
-opt-einsum
-scikit-learn
-numpy<2
-absl-py
-termcolor
-matplotlib
-ml-collections
-cython<3
-wandb
-imageio
-moviepy
-opensimplex
-pygame
-libtmux
-threadpoolctl
-plotly
-tabulate
-tensorflow-cpu
-# tensorflow-probability==0.22.0
-tensorflow-probability
-tensorflow-datasets
-diffusers
-fabric
-opt-einsum
+# --- Core Scientific Stack (Constrained) ---
+# Numba and MoviePy often break on Numpy 2.0+, so we keep this constraint.
+numpy<2.0.0
 scipy
-einops
-jaxtyping
+cython<3
+numba
+matplotlib
+pandas
+scikit-learn
 
-flax
-optax
-orbax
-distrax
-chex
-typeguard
+# --- TensorFlow Stack ---
+# TFP 0.25.0 is the specific match for TF 2.18.0
+tensorflow-cpu==2.18.0
+tensorflow-probability==0.25.0
+tensorflow-datasets
+
+# --- JAX & Flax Stack ---
+# Note: Installing jax[tpu] usually requires the -f link (see instructions below)
 jax[tpu]==0.7.1
 flax==0.11.1
+optax
+orbax-checkpoint
+distrax
+chex
+jaxtyping
+typeguard
 
+# --- ML Utilities ---
+diffusers
+ml-collections
+absl-py
+opt-einsum
+einops
+wandb
+fabric
+
+# --- Media & Visualization ---
+imageio
+moviepy
+pygame
+plotly
+termcolor
+tabulate
+
+# --- System & Threading ---
+libtmux
+threadpoolctl
 typing_extensions
