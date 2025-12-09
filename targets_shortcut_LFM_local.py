@@ -123,64 +123,39 @@ def get_targets(FLAGS, key, train_state, images, labels, force_t=-1, force_dt=-1
         batch_clusters = cluster_assignments
         batch_size = images.shape[0]
         
-        # Create pairing: for each sample i, find a partner j from same cluster
-        # Strategy: randomly shuffle indices within each cluster
-        pair_indices = jnp.arange(batch_size)
+        # JIT-compatible pairing: for each sample, find a random partner from same cluster
+        # Using vectorized operations instead of loops
         
-        # For each unique cluster, create random pairings within cluster
-        unique_clusters = jnp.unique(batch_clusters)
-        
-        # Simple pairing strategy: for each sample, find next sample in same cluster (circular)
-        # This ensures every sample has a pair from its cluster
-        pair_indices_list = []
-        valid_pairs = []
-        
-        for cluster_id in range(jnp.max(batch_clusters) + 1):
-            # Find all samples in this cluster
-            cluster_mask = (batch_clusters == cluster_id)
-            cluster_indices = jnp.where(cluster_mask, jnp.arange(batch_size), -1)
-            cluster_indices = cluster_indices[cluster_indices >= 0]
-            n_in_cluster = jnp.sum(cluster_mask)
-            
-            if n_in_cluster > 1:
-                # Randomly shuffle within cluster to create pairs
-                shuffled = jax.random.permutation(pair_key, cluster_indices)
-                # Map each original index to its shuffled partner
-                for idx, orig_idx in enumerate(cluster_indices):
-                    pair_indices_list.append((orig_idx, shuffled[idx]))
-                    valid_pairs.append(True)
-            else:
-                # Singleton cluster - pair with self (will be marked invalid)
-                if n_in_cluster == 1:
-                    orig_idx = cluster_indices[0]
-                    pair_indices_list.append((orig_idx, orig_idx))
-                    valid_pairs.append(False)
-        
-        # Convert to arrays - use a simpler approach for JAX compatibility
-        # Pair each sample with a random other sample from same cluster
-        pair_indices = jnp.zeros(batch_size, dtype=jnp.int32)
-        valid_pair_mask = jnp.zeros(batch_size, dtype=bool)
-        
-        for i in range(batch_size):
-            # Find all samples in same cluster as sample i
-            same_cluster = (batch_clusters == batch_clusters[i])
-            same_cluster_indices = jnp.where(same_cluster, jnp.arange(batch_size), batch_size)
-            # Exclude self
-            same_cluster_indices = jnp.where(same_cluster_indices == i, batch_size, same_cluster_indices)
+        def find_cluster_pair(i, key):
+            """Find a random partner from the same cluster as sample i"""
+            my_cluster = batch_clusters[i]
+            # Create mask for samples in same cluster (excluding self)
+            same_cluster = (batch_clusters == my_cluster) & (jnp.arange(batch_size) != i)
+            # Get indices of cluster-mates
+            cluster_mate_indices = jnp.where(same_cluster, jnp.arange(batch_size), batch_size)
             # Count valid partners
-            n_partners = jnp.sum(same_cluster_indices < batch_size)
+            n_partners = jnp.sum(same_cluster)
             
-            # If there are other samples in same cluster, pick one randomly
-            if n_partners > 0:
-                # Random selection from cluster-mates
-                rand_idx = jax.random.randint(pair_key, (), 0, batch_size)
-                selected = same_cluster_indices[rand_idx % jnp.maximum(n_partners, 1)]
-                pair_indices = pair_indices.at[i].set(jnp.where(n_partners > 0, selected, i))
-                valid_pair_mask = valid_pair_mask.at[i].set(True)
-            else:
-                # No cluster-mates, pair with self (invalid)
-                pair_indices = pair_indices.at[i].set(i)
-                valid_pair_mask = valid_pair_mask.at[i].set(False)
+            # Randomly select one partner (if available)
+            rand_offset = jax.random.randint(key, (), 0, batch_size)
+            # Find the rand_offset-th valid partner (circular indexing)
+            valid_mask = cluster_mate_indices < batch_size
+            cumsum = jnp.cumsum(valid_mask)
+            target_position = (rand_offset % jnp.maximum(n_partners, 1)) + 1
+            selected_idx = jnp.argmax(cumsum >= target_position)
+            pair_idx = cluster_mate_indices[selected_idx]
+            
+            # If no partners, pair with self (will be marked invalid)
+            pair_idx = jnp.where(n_partners > 0, pair_idx, i)
+            is_valid = n_partners > 0
+            
+            return pair_idx, is_valid
+        
+        # Generate random keys for each sample
+        pair_keys = jax.random.split(pair_key, batch_size)
+        
+        # Vectorized pairing using vmap
+        pair_indices, valid_pair_mask = jax.vmap(find_cluster_pair)(jnp.arange(batch_size), pair_keys)
         
         # Get paired samples
         x_1_paired = x_1[pair_indices]
@@ -196,7 +171,6 @@ def get_targets(FLAGS, key, train_state, images, labels, force_t=-1, force_dt=-1
         
         info['locality_mode'] = 'cluster_neighborhood'
         info['locality_valid_pairs'] = jnp.mean(valid_pair_mask.astype(jnp.float32))
-        info['locality_n_unique_clusters'] = jnp.unique(batch_clusters).shape[0]
         
     else:
         # Mode 2: Random perturbation (original approach)
