@@ -1,7 +1,7 @@
 numba
 opt-einsum
 scikit-learn
-numpy
+numpy<2
 absl-py
 termcolor
 matplotlib
