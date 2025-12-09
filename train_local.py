@@ -27,6 +27,7 @@ flags.DEFINE_string('dataset_name', 'imagenet256', 'Environment name.')
 flags.DEFINE_string('load_dir', None, 'Logging dir (if not None, save params).')
 flags.DEFINE_string('save_dir', None, 'Logging dir (if not None, save params).')
 flags.DEFINE_string('fid_stats', None, 'FID stats file.')
+flags.DEFINE_string('cluster_dir', None, 'Directory containing cluster assignments from encode_and_cluster.py')
 flags.DEFINE_integer('seed', 10, 'Random seed.') # Must be the same across all processes.
 flags.DEFINE_integer('log_interval', 1000, 'Logging interval.')
 flags.DEFINE_integer('eval_interval', 20000, 'Eval interval.')
@@ -67,6 +68,8 @@ model_config = ml_collections.ConfigDict({
     # Locality-specific parameters
     'locality_noise_scale': 0.1,  # Scale of noise perturbation for locality constraint
     'locality_weight': 1.0,  # Weight for locality consistency loss
+    'use_cluster_neighborhoods': False,  # Use cluster-based pairing instead of random perturbation
+    'num_clusters': 100,  # Number of clusters (if using cluster neighborhoods)
 })
 
 
@@ -104,6 +107,26 @@ def main(_):
     example_obs, example_labels = next(dataset)
     example_obs = example_obs[:1]
     example_obs_shape = example_obs.shape
+    
+    # Load cluster assignments if using cluster neighborhoods
+    cluster_assignment_map = None
+    if FLAGS.model.use_cluster_neighborhoods and FLAGS.cluster_dir is not None:
+        import csv
+        from pathlib import Path
+        assignments_path = Path(FLAGS.cluster_dir) / "assignments.csv"
+        if assignments_path.exists():
+            # Load assignments into a dictionary: image_index -> cluster_id
+            cluster_assignment_map = {}
+            with open(assignments_path, 'r') as f:
+                reader = csv.DictReader(f)
+                for idx, row in enumerate(reader):
+                    # Map by index since we don't have paths in iterator-based datasets
+                    cluster_assignment_map[idx] = int(row['cluster'])
+            print(f"Loaded {len(cluster_assignment_map)} cluster assignments from {assignments_path}")
+            FLAGS.model.num_clusters = max(cluster_assignment_map.values()) + 1
+        else:
+            print(f"Warning: assignments.csv not found at {assignments_path}, using random perturbation")
+            FLAGS.model.use_cluster_neighborhoods = False
 
     if FLAGS.model.use_stable_vae:
         vae = StableVAE.create()
@@ -195,19 +218,25 @@ def main(_):
     visualize_labels = shard_data(visualize_labels)
     visualize_labels = jax.experimental.multihost_utils.process_allgather(visualize_labels)
     imagenet_labels = open('data/imagenet_labels.txt').read().splitlines()
+    
+    # Create a stateful batch counter for cluster assignment mapping
+    batch_counter = {'count': 0}
 
     ###################################
     # Update Function
     ###################################
 
-    @partial(jax.jit, out_shardings=(train_state_sharding, no_shard))
-    def update(train_state, train_state_teacher, images, labels, force_t=-1, force_dt=-1):
+    @partial(jax.jit, out_shardings=(train_state_sharding, no_shard), static_argnames=('cluster_assignments',))
+    def update(train_state, train_state_teacher, images, labels, cluster_assignments=None, force_t=-1, force_dt=-1):
         new_rng, targets_key, dropout_key, perm_key = jax.random.split(train_state.rng, 4)
         info = {}
 
         id_perm = jax.random.permutation(perm_key, images.shape[0])
         images = images[id_perm]
         labels = labels[id_perm]
+        # Also permute cluster assignments if provided
+        if cluster_assignments is not None:
+            cluster_assignments = cluster_assignments[id_perm]
         images = jax.lax.with_sharding_constraint(images, data_sharding)
         labels = jax.lax.with_sharding_constraint(labels, data_sharding)
 
@@ -216,7 +245,10 @@ def main(_):
 
         # Import and use locality-aware targets
         from targets_shortcut_LFM_local import get_targets
-        x_t, v_t, t, dt_base, labels_dropped, info = get_targets(FLAGS, targets_key, train_state, images, labels, force_t, force_dt)
+        x_t, v_t, t, dt_base, labels_dropped, info = get_targets(
+            FLAGS, targets_key, train_state, images, labels, force_t, force_dt, 
+            cluster_assignments=cluster_assignments
+        )
 
         def loss_fn(grad_params):
             v_prime, logvars, activations = train_state.call_model(x_t, t, dt_base, labels_dropped, train=True, rngs={'dropout': dropout_key}, params=grad_params, return_activations=True)
@@ -237,6 +269,7 @@ def main(_):
                 v_u = info['locality_v_u']
                 v_s = info['locality_v_s']
                 locality_weight = info['locality_weight']
+                locality_valid_mask = info.get('locality_valid_mask', None)
                 
                 # Get number of bootstrap samples
                 bootstrap_size = FLAGS.batch_size // FLAGS.model['bootstrap_every']
@@ -250,6 +283,10 @@ def main(_):
                     t_flow = t[bootstrap_size:]
                     dt_base_flow = dt_base[bootstrap_size:]
                     labels_flow = labels_dropped[bootstrap_size:]
+                    if locality_valid_mask is not None:
+                        valid_mask_flow = locality_valid_mask[:bst_size_data]
+                    else:
+                        valid_mask_flow = jnp.ones(bst_size_data, dtype=bool)
                     
                     # Predict velocity at u_t
                     v_u_pred, _, _ = train_state.call_model(
@@ -257,20 +294,23 @@ def main(_):
                         train=True, rngs={'dropout': dropout_key}, params=grad_params, return_activations=True
                     )
                     
-                    # Predict velocity at s_t (perturbed point)
+                    # Predict velocity at s_t (neighbor/perturbed point)
                     v_s_pred, _, _ = train_state.call_model(
                         s_t_flow, t_flow, dt_base_flow, labels_flow, 
                         train=True, rngs={'dropout': dropout_key}, params=grad_params, return_activations=True
                     )
                     
                     # Compute locality loss: ||v(u_t, t) - v(s_t, t)||²
-                    # Two nearby points should have similar velocities
+                    # Two nearby points (from same cluster or perturbed noise) should have similar velocities
                     locality_mse = jnp.mean((v_u_pred - v_s_pred) ** 2, axis=(1, 2, 3))
-                    locality_loss = jnp.mean(locality_mse)
+                    # Apply valid mask (only for valid pairs)
+                    locality_mse_masked = jnp.where(valid_mask_flow, locality_mse, 0.0)
+                    locality_loss = jnp.sum(locality_mse_masked) / jnp.maximum(jnp.sum(valid_mask_flow), 1.0)
                     
                     # Add to total loss
                     loss = loss + locality_weight * locality_loss
                     loss_info['loss_locality'] = locality_loss
+                    loss_info['locality_valid_ratio'] = jnp.mean(valid_mask_flow.astype(jnp.float32))
                     
                     # Also track how different the actual target velocities are
                     target_diff = jnp.mean((v_u[:bst_size_data] - v_s[:bst_size_data]) ** 2, axis=(1, 2, 3))
@@ -317,9 +357,27 @@ def main(_):
             if FLAGS.model.use_stable_vae and 'latent' not in FLAGS.dataset_name:
                 vae_rng, vae_key = jax.random.split(vae_rng)
                 batch_images = vae_encode(vae_key, batch_images)
+            
+            # Get cluster assignments for this batch if using cluster neighborhoods
+            batch_cluster_assignments = None
+            if cluster_assignment_map is not None and FLAGS.model.use_cluster_neighborhoods:
+                # Map batch indices to cluster IDs
+                # Note: This assumes sequential iteration. For more complex datasets,
+                # you may need to store image IDs with the dataset
+                batch_size = batch_images.shape[0]
+                start_idx = batch_counter['count']
+                batch_cluster_ids = []
+                for j in range(batch_size):
+                    idx = (start_idx + j) % len(cluster_assignment_map)
+                    batch_cluster_ids.append(cluster_assignment_map.get(idx, 0))
+                batch_cluster_assignments = shard_data(jnp.array(batch_cluster_ids, dtype=jnp.int32))
+                batch_counter['count'] += batch_size
 
         # Train update.
-        train_state, update_info = update(train_state, train_state_teacher, batch_images, batch_labels)
+        train_state, update_info = update(
+            train_state, train_state_teacher, batch_images, batch_labels, 
+            cluster_assignments=batch_cluster_assignments
+        )
 
         if i % FLAGS.log_interval == 0 or i == 1:
             update_info = jax.device_get(update_info)
@@ -330,7 +388,11 @@ def main(_):
             valid_images, valid_labels = shard_data(*next(dataset_valid))
             if FLAGS.model.use_stable_vae and 'latent' not in FLAGS.dataset_name:
                 valid_images = vae_encode(vae_rng, valid_images)
-            _, valid_update_info = update(train_state, train_state_teacher, valid_images, valid_labels)
+            # For validation, we can optionally skip cluster assignments or use random assignment
+            _, valid_update_info = update(
+                train_state, train_state_teacher, valid_images, valid_labels, 
+                cluster_assignments=None  # Skip clustering for validation
+            )
             valid_update_info = jax.device_get(valid_update_info)
             valid_update_info = jax.tree_util.tree_map(lambda x: x.mean(), valid_update_info)
             train_metrics['training/loss_valid'] = valid_update_info['loss']

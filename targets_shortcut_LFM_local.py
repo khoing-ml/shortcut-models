@@ -2,13 +2,22 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-def get_targets(FLAGS, key, train_state, images, labels, force_t=-1, force_dt=-1):
+def get_targets(FLAGS, key, train_state, images, labels, force_t=-1, force_dt=-1, cluster_assignments=None):
     """
     Locality-aware flow matching with bootstrap distillation.
-    Implements L_local from Equation 4: enforces v(u_t, t) ≈ v(s_t, t) for similar noises.
-    Two similar noises should produce two similar images.
+    Implements L_local from Equation 4: enforces v(u_t, t) ≈ v(s_t, t) for similar samples.
+    
+    Two modes:
+    1. Random perturbation (default): Two similar noises should produce two similar images.
+    2. Cluster neighborhood (if cluster_assignments provided): Two samples from the same 
+       cluster/neighborhood should have similar trajectories.
+    
+    Args:
+        cluster_assignments: Optional array of cluster IDs for each sample in the batch.
+                           Shape: (batch_size,). If provided, uses cluster-based pairing
+                           instead of random perturbation.
     """
-    label_key, time_key, noise_key, perturbation_key = jax.random.split(key, 4)
+    label_key, time_key, noise_key, perturbation_key, pair_key = jax.random.split(key, 5)
     info = {}
 
     # 1) =========== Sample dt. ============
@@ -82,7 +91,9 @@ def get_targets(FLAGS, key, train_state, images, labels, force_t=-1, force_dt=-1
 
     # 4) =========== Generate Locality-Aware Flow-Matching Targets ============
     # Implements: L_local = E[ℓ(t, x_0, x_1)] + λ E[||v(u_t, t) - v(s_t, t)||²]
-    # where u_t and s_t come from similar noises in the same data region
+    # Two modes:
+    # - Random perturbation: u_t and s_t come from similar noises (x_0 and x_0')
+    # - Cluster neighborhood: u_t and s_t come from samples in the same cluster
 
     labels_dropout = jax.random.bernoulli(label_key, FLAGS.model['class_dropout_prob'], (labels.shape[0],))
     labels_dropped = jnp.where(labels_dropout, FLAGS.model['num_classes'], labels)
@@ -101,18 +112,108 @@ def get_targets(FLAGS, key, train_state, images, labels, force_t=-1, force_dt=-1
     x_t = (1 - (1 - 1e-5) * t_full) * x_0 + t_full * x_1
     v_t = x_1 - (1 - 1e-5) * x_0
     
-    # Generate perturbed noise for locality constraint
-    # Create pairs: (x_0, x_0') where x_0' is a small perturbation of x_0
-    locality_scale = FLAGS.model.get('locality_noise_scale', 0.1)  # Noise perturbation magnitude
-    x_0_perturbed = x_0 + locality_scale * jax.random.normal(perturbation_key, x_0.shape)
+    # ==== Choose locality pairing strategy ====
+    use_cluster_neighborhoods = FLAGS.model.get('use_cluster_neighborhoods', False)
     
-    # Compute u_t and s_t: two nearby points from similar noises
-    u_t = (1 - (1 - 1e-5) * t_full) * x_0 + t_full * x_1  # Original point (same as x_t)
-    s_t = (1 - (1 - 1e-5) * t_full) * x_0_perturbed + t_full * x_1  # Perturbed point
-    
-    # Both should have similar velocity targets (since they lead to same x_1)
-    v_u = x_1 - (1 - 1e-5) * x_0
-    v_s = x_1 - (1 - 1e-5) * x_0_perturbed
+    if use_cluster_neighborhoods and cluster_assignments is not None:
+        # Mode 1: Cluster-based pairing
+        # For each sample, find another sample from the same cluster in the batch
+        # This creates semantically meaningful locality constraints
+        
+        batch_clusters = cluster_assignments
+        batch_size = images.shape[0]
+        
+        # Create pairing: for each sample i, find a partner j from same cluster
+        # Strategy: randomly shuffle indices within each cluster
+        pair_indices = jnp.arange(batch_size)
+        
+        # For each unique cluster, create random pairings within cluster
+        unique_clusters = jnp.unique(batch_clusters)
+        
+        # Simple pairing strategy: for each sample, find next sample in same cluster (circular)
+        # This ensures every sample has a pair from its cluster
+        pair_indices_list = []
+        valid_pairs = []
+        
+        for cluster_id in range(jnp.max(batch_clusters) + 1):
+            # Find all samples in this cluster
+            cluster_mask = (batch_clusters == cluster_id)
+            cluster_indices = jnp.where(cluster_mask, jnp.arange(batch_size), -1)
+            cluster_indices = cluster_indices[cluster_indices >= 0]
+            n_in_cluster = jnp.sum(cluster_mask)
+            
+            if n_in_cluster > 1:
+                # Randomly shuffle within cluster to create pairs
+                shuffled = jax.random.permutation(pair_key, cluster_indices)
+                # Map each original index to its shuffled partner
+                for idx, orig_idx in enumerate(cluster_indices):
+                    pair_indices_list.append((orig_idx, shuffled[idx]))
+                    valid_pairs.append(True)
+            else:
+                # Singleton cluster - pair with self (will be marked invalid)
+                if n_in_cluster == 1:
+                    orig_idx = cluster_indices[0]
+                    pair_indices_list.append((orig_idx, orig_idx))
+                    valid_pairs.append(False)
+        
+        # Convert to arrays - use a simpler approach for JAX compatibility
+        # Pair each sample with a random other sample from same cluster
+        pair_indices = jnp.zeros(batch_size, dtype=jnp.int32)
+        valid_pair_mask = jnp.zeros(batch_size, dtype=bool)
+        
+        for i in range(batch_size):
+            # Find all samples in same cluster as sample i
+            same_cluster = (batch_clusters == batch_clusters[i])
+            same_cluster_indices = jnp.where(same_cluster, jnp.arange(batch_size), batch_size)
+            # Exclude self
+            same_cluster_indices = jnp.where(same_cluster_indices == i, batch_size, same_cluster_indices)
+            # Count valid partners
+            n_partners = jnp.sum(same_cluster_indices < batch_size)
+            
+            # If there are other samples in same cluster, pick one randomly
+            if n_partners > 0:
+                # Random selection from cluster-mates
+                rand_idx = jax.random.randint(pair_key, (), 0, batch_size)
+                selected = same_cluster_indices[rand_idx % jnp.maximum(n_partners, 1)]
+                pair_indices = pair_indices.at[i].set(jnp.where(n_partners > 0, selected, i))
+                valid_pair_mask = valid_pair_mask.at[i].set(True)
+            else:
+                # No cluster-mates, pair with self (invalid)
+                pair_indices = pair_indices.at[i].set(i)
+                valid_pair_mask = valid_pair_mask.at[i].set(False)
+        
+        # Get paired samples
+        x_1_paired = x_1[pair_indices]
+        x_0_paired = x_0  # Use same noise for fair comparison
+        
+        # Compute u_t (original) and s_t (from cluster neighbor)
+        u_t = x_t  # Original trajectory point
+        s_t = (1 - (1 - 1e-5) * t_full) * x_0_paired + t_full * x_1_paired  # Neighbor's trajectory
+        
+        # Target velocities
+        v_u = v_t  # Original velocity
+        v_s = x_1_paired - (1 - 1e-5) * x_0_paired  # Neighbor's velocity
+        
+        info['locality_mode'] = 'cluster_neighborhood'
+        info['locality_valid_pairs'] = jnp.mean(valid_pair_mask.astype(jnp.float32))
+        info['locality_n_unique_clusters'] = jnp.unique(batch_clusters).shape[0]
+        
+    else:
+        # Mode 2: Random perturbation (original approach)
+        # Create pairs: (x_0, x_0') where x_0' is a small perturbation of x_0
+        locality_scale = FLAGS.model.get('locality_noise_scale', 0.1)
+        x_0_perturbed = x_0 + locality_scale * jax.random.normal(perturbation_key, x_0.shape)
+        
+        # Compute u_t and s_t: two nearby points from similar noises
+        u_t = x_t  # Original point (same as x_t)
+        s_t = (1 - (1 - 1e-5) * t_full) * x_0_perturbed + t_full * x_1  # Perturbed point
+        
+        # Both should have similar velocity targets (since they lead to same x_1)
+        v_u = v_t
+        v_s = x_1 - (1 - 1e-5) * x_0_perturbed
+        
+        valid_pair_mask = jnp.ones(images.shape[0], dtype=bool)  # All pairs valid
+        info['locality_mode'] = 'random_perturbation'
     
     # Store locality information for loss computation
     # The model will predict v(u_t, t) and v(s_t, t), and we'll add a consistency term
@@ -121,6 +222,7 @@ def get_targets(FLAGS, key, train_state, images, labels, force_t=-1, force_dt=-1
     info['locality_v_u'] = v_u
     info['locality_v_s'] = v_s
     info['locality_weight'] = FLAGS.model.get('locality_weight', 1.0)
+    info['locality_valid_mask'] = valid_pair_mask
     
     dt_flow = np.log2(FLAGS.model['denoise_timesteps']).astype(jnp.int32)
     dt_base = jnp.ones(images.shape[0], dtype=jnp.int32) * dt_flow
