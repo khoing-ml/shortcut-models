@@ -10,6 +10,7 @@ scikit-learn
 
 # --- TensorFlow Stack ---
 # TFP 0.25.0 is the specific match for TF 2.18.0
+tensorflow==2.18.0
 tensorflow-cpu==2.18.0
 tensorflow-probability==0.25.0
 tensorflow-datasets
