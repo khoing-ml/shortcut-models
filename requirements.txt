@@ -16,7 +16,6 @@ tensorflow-datasets
 
 # --- JAX & Flax Stack ---
 # Note: Installing jax[tpu] usually requires the -f link (see instructions below)
-jax[tpu]==0.7.1
 flax==0.11.1
 optax
 orbax-checkpoint
