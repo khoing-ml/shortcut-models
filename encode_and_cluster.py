@@ -22,9 +22,11 @@ import shutil
 from collections import defaultdict
 
 import numpy as np
+import os
 
 from sklearn.cluster import MiniBatchKMeans
 from tqdm import tqdm
+from utils.datasets import get_dataset
 
 
 def build_imagefolder_dataset(data_dir, image_size=224, batch_size=64, num_workers=4):
@@ -45,6 +47,36 @@ def build_imagefolder_dataset(data_dir, image_size=224, batch_size=64, num_worke
     loader = __import__("torch").utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=False,
                                                       num_workers=num_workers, pin_memory=True)
     return dataset, loader
+
+
+
+def encode_with_stablevae_from_iterator(dataset_iter, n_samples=10000, image_size=512, seed=0):
+    # Uses repo's Flax StableVAE and a NumPy/JAX dataset iterator (like train.py's get_dataset)
+    import jax
+    import jax.numpy as jnp
+    from utils.stable_vae import StableVAE
+
+    vae = StableVAE.create()
+    latents_list = []
+    paths = []
+    seen = 0
+    pfx = 'sample'
+    while seen < n_samples:
+        images, _ = next(dataset_iter)
+        # images is numpy array in [-1,1], shape (B,H,W,C)
+        imgs_jax = jnp.array(images)
+        key = jax.random.PRNGKey(seed)
+        seed += 1
+        lat = vae.encode(key, imgs_jax, scale=True)
+        lat_np = np.array(jax.device_get(lat))
+        B = lat_np.shape[0]
+        lat_np = lat_np.reshape(B, -1)
+        latents_list.append(lat_np)
+        for i in range(B):
+            paths.append(f"{pfx}_{seen + i}")
+        seen += B
+    latents = np.concatenate(latents_list, axis=0)
+    return latents[:n_samples], paths[:n_samples]
 
 
 def encode_with_stablevae(loader, dataset, image_size=512, batch_size=8, seed=0):
@@ -68,6 +100,32 @@ def encode_with_stablevae(loader, dataset, image_size=512, batch_size=8, seed=0)
         B = lat_np.shape[0]
         lat_np = lat_np.reshape(B, -1)
         latents_list.append(lat_np)
+    latents = np.concatenate(latents_list, axis=0)
+    paths = [p for (p, _) in dataset.samples]
+    return latents, paths
+
+
+def encode_with_resnet(loader, dataset, device='cuda'):
+    # Simple ResNet50 feature extractor using torchvision
+    try:
+        import torch
+        import torchvision
+    except Exception as e:
+        raise ImportError("torch and torchvision are required for ResNet encoding") from e
+
+    model = torchvision.models.resnet50(pretrained=True)
+    model.eval()
+    model = model.to(device)
+    # remove the final fc layer to get features
+    feat = torch.nn.Sequential(*list(model.children())[:-1])
+
+    latents_list = []
+    for images, _ in tqdm(loader, desc="Encoding (resnet)"):
+        with torch.no_grad():
+            images = images.to(device)
+            out = feat(images)  # (B, 2048, 1, 1)
+            out = out.reshape(out.shape[0], -1).cpu().numpy()
+            latents_list.append(out)
     latents = np.concatenate(latents_list, axis=0)
     paths = [p for (p, _) in dataset.samples]
     return latents, paths
@@ -113,7 +171,8 @@ def dump_cluster_examples(out_dir, paths, assignments, max_per_cluster=10):
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--data-dir", required=True, help="ImageFolder formatted directory")
+    p.add_argument("--dataset-name", default=None, help="Dataset name to load via utils.get_dataset (e.g. celebahq256)")
+    p.add_argument("--n-samples", type=int, default=10000, help="Number of samples to encode when using --dataset-name (get_dataset yields an endless iterator)")
     p.add_argument("--out-dir", default="encode_cluster_out")
     p.add_argument("--n-clusters", type=int, default=100)
     p.add_argument("--batch-size", type=int, default=64)
@@ -127,19 +186,30 @@ def parse_args():
 
 def main():
     args = parse_args()
-    dataset, loader = build_imagefolder_dataset(args.data_dir, image_size=args.image_size,
-                                               batch_size=args.batch_size, num_workers=args.num_workers)
-    print(f"Found {len(dataset)} images")
-
-    if args.encoder == "resnet":
-        latents, paths = encode_with_resnet(loader, dataset, device=args.device)
+    if args.dataset_name:
+        # Use the project's get_dataset (same as train.py). It returns an infinite iterator, so require --n-samples.
+        dataset_iter = get_dataset(args.dataset_name, args.batch_size, True, debug_overfit=False)
+        print(f"Using dataset '{args.dataset_name}' via utils.get_dataset — encoding {args.n_samples} samples")
     else:
-        # stablevae works better with smaller batch sizes; override if user provided larger
-        safe_batch = max(1, min(args.batch_size, 8))
-        # rebuild loader with safe batch size
         dataset, loader = build_imagefolder_dataset(args.data_dir, image_size=args.image_size,
-                                                   batch_size=safe_batch, num_workers=args.num_workers)
-        latents, paths = encode_with_stablevae(loader, dataset, image_size=args.image_size, batch_size=safe_batch)
+                                                   batch_size=args.batch_size, num_workers=args.num_workers)
+        print(f"Found {len(dataset)} images")
+
+    if args.dataset_name:
+        if args.encoder != 'stablevae':
+            raise NotImplementedError("When using --dataset-name/get_dataset, only the 'stablevae' encoder is supported currently.")
+        # use stablevae with the project's dataset iterator
+        latents, paths = encode_with_stablevae_from_iterator(dataset_iter, n_samples=args.n_samples, image_size=args.image_size)
+    else:
+        if args.encoder == "resnet":
+            latents, paths = encode_with_resnet(loader, dataset, device=args.device)
+        else:
+            # stablevae works better with smaller batch sizes; override if user provided larger
+            safe_batch = max(1, min(args.batch_size, 8))
+            # rebuild loader with safe batch size
+            dataset, loader = build_imagefolder_dataset(args.data_dir, image_size=args.image_size,
+                                                       batch_size=safe_batch, num_workers=args.num_workers)
+            latents, paths = encode_with_stablevae(loader, dataset, image_size=args.image_size, batch_size=safe_batch)
 
     print("Clustering...")
     kmeans, assignments = cluster_latents(latents, n_clusters=args.n_clusters)
