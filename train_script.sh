@@ -1,0 +1,32 @@
+#! /usr/bin/bash
+
+uv run encode_and_cluster.py \
+  --dataset-name celebahq256 \
+  --n-samples 30000 \
+  --batch-size 8 \
+  --image-size 512 \
+  --encoder stablevae \
+  --out-dir results_celebahq \
+  --n-clusters 100
+uv run train_local.py \
+  --dataset_name celebahq256 \
+  --cluster_dir ./results_celebahq \
+  --model.hidden_size 768 \
+  --model.patch_size 2 \
+  --model.depth 12 \
+  --model.num_heads 12 \
+  --model.mlp_ratio 4 \
+  --model.cfg_scale 0 \
+  --model.class_dropout_prob 1 \
+  --model.num_classes 1 \
+  --model.train_type shortcut \
+  --model.sharding fsdp \
+  --model.bootstrap_every 4 \
+  --batch_size 64 \
+  --dataset_name celebahq256 \
+  --fid_stats data/celeba256_fidstats_ours.npz \
+  --max_steps 200000 \
+  --eval_interval 1000 \
+  --log_interval 1000 \
+  --model.use_cluster_neighborhoods=True \
+  --model.locality_weight=1.0

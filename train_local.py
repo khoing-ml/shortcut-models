@@ -226,7 +226,7 @@ def main(_):
     # Update Function
     ###################################
 
-    @partial(jax.jit, out_shardings=(train_state_sharding, no_shard), static_argnames=('cluster_assignments',))
+    @partial(jax.jit, out_shardings=(train_state_sharding, no_shard))
     def update(train_state, train_state_teacher, images, labels, cluster_assignments=None, force_t=-1, force_dt=-1):
         new_rng, targets_key, dropout_key, perm_key = jax.random.split(train_state.rng, 4)
         info = {}
