@@ -44,3 +44,4 @@ tabulate
 libtmux
 threadpoolctl
 typing_extensions
+jaxtyping
