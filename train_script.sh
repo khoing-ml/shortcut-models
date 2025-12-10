@@ -9,7 +9,7 @@
 #   --out-dir results_celebahq \
 #   --n-clusters 100 \
 #   --cluster-method kmeans
-uv run train_local.py \
+uv run train.py \
   --dataset_name celebahq256 \
   --cluster_dir ./results_celebahq \
   --model.hidden_size 768 \
