@@ -99,8 +99,17 @@ def main(_):
     print("Device Batch:", local_batch_size // device_count)
 
     # Create wandb logger
+    print(f"Process index: {jax.process_index()}, Mode: {FLAGS.mode}")
     if jax.process_index() == 0 and FLAGS.mode == 'train':
-        setup_wandb(FLAGS.model.to_dict(), **FLAGS.wandb)
+        print("Initializing wandb...")
+        try:
+            setup_wandb(FLAGS.model.to_dict(), **FLAGS.wandb)
+            print(f"wandb initialized successfully. Run: {wandb.run}")
+            print(f"wandb project: {FLAGS.wandb.project}, name: {FLAGS.wandb.name}")
+        except Exception as e:
+            print(f"wandb initialization failed: {e}")
+            import traceback
+            traceback.print_exc()
         
     dataset = get_dataset(FLAGS.dataset_name, local_batch_size, True, FLAGS.debug_overfit)
     dataset_valid = get_dataset(FLAGS.dataset_name, local_batch_size, False, FLAGS.debug_overfit)
@@ -398,7 +407,13 @@ def main(_):
             train_metrics['training/loss_valid'] = valid_update_info['loss']
 
             if jax.process_index() == 0:
-                wandb.log(train_metrics, step=i)
+                print(f"Step {i}: Logging {len(train_metrics)} metrics to wandb")
+                print(f"Sample metrics: loss={train_metrics.get('training/loss', 'N/A'):.4f}")
+                if wandb.run is not None:
+                    wandb.log(train_metrics, step=i)
+                    print(f"Successfully logged to wandb")
+                else:
+                    print("WARNING: wandb.run is None, not logging!")
 
         if i % FLAGS.eval_interval == 0:
             eval_model(FLAGS, train_state, train_state_teacher, i, dataset, dataset_valid, shard_data, vae_encode, vae_decode, update,
