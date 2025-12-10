@@ -143,19 +143,21 @@ def eval_model(
             valid_images_gather = jax.experimental.multihost_utils.process_allgather(shard_data(valid_images_tile))
             if jax.process_index() == 0:
                 # valid_images_gather is [global_batchsize] wide. We'll slice it
-                # into `num_procs` chunks and create one figure per process so
-                # you get one upload per TPU process (visible in a single W&B run).
-                num_procs = jax.process_count()
+                # into `num_slices` chunks and create one figure per device so
+                # you get one upload per local device (on a single-host 8-device setup
+                # this yields 8 figures). Use `device_count()` rather than
+                # `process_count()` so we split by devices not hosts.
+                num_slices = jax.device_count()
                 total = valid_images_gather.shape[0]
-                per_proc = total // num_procs if num_procs > 0 else total
-                if per_proc == 0:
+                per_slice = total // num_slices if num_slices > 0 else total
+                if per_slice == 0:
                     # Nothing to split sensibly; fall back to single figure
-                    per_proc = total
-                    num_procs = 1
+                    per_slice = total
+                    num_slices = 1
 
-                for p in range(num_procs):
-                    start = p * per_proc
-                    end = start + per_proc
+                for p in range(num_slices):
+                    start = p * per_slice
+                    end = start + per_slice
                     # clamp end to available images
                     end = min(end, total)
                     proc_count = end - start
