@@ -69,7 +69,7 @@ model_config = ml_collections.ConfigDict({
     'locality_noise_scale': 0.1,  # Scale of noise perturbation for locality constraint
     'locality_weight': 1.0,  # Weight for locality consistency loss
     'use_cluster_neighborhoods': False,  # Use cluster-based pairing instead of random perturbation
-    'num_clusters': 100,  # Number of clusters (if using cluster neighborhoods)
+    'num_clusters': 500,  # Number of clusters (if using cluster neighborhoods)
 })
 
 

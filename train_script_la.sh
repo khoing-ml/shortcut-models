@@ -7,7 +7,7 @@ uv run encode_and_cluster.py \
   --image-size 512 \
   --encoder stablevae \
   --out-dir results_celebahq \
-  --n-clusters 100 \
+  --n-clusters 500 \
   --cluster-method kmeans
 uv run train_local.py \
   --dataset_name celebahq256 \
@@ -31,5 +31,7 @@ uv run train_local.py \
   --log_interval 5000 \
   --model.use_cluster_neighborhoods=True \
   --model.locality_weight=1.0 \
+  --model.num_clusters=500 \
   --save_dir ./checkpoints_celebahq_local \
   --save_interval 35000 \
+ 
