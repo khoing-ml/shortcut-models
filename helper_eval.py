@@ -219,9 +219,16 @@ def eval_model(
             x = x + v * delta_t
             if denoise_timesteps <= 8 or ti % (denoise_timesteps // 8) == 0 or ti == FLAGS.model.denoise_timesteps-1:
                 np_x = jax.experimental.multihost_utils.process_allgather(x)
-                all_x.append(np.array(np_x))
+                np_x = np.array(np_x)
+                # If gathering added a leading host axis (num_hosts, per_host_batch, ...),
+                # flatten to a single global batch axis for easy indexing.
+                if np_x.ndim > 3:
+                    np_x = np_x.reshape(-1, *np_x.shape[2:])
+                all_x.append(np_x)
         all_x = np.stack(all_x, axis=1) # [batch, timesteps, etc..]
         all_x = all_x[:, -8:]
+        # Debug: show shape before plotting so we can verify global-batch dims
+        print("DEBUG sample_N all_x.shape:", all_x.shape)
         if jax.process_index() == 0:
             fig, axs = plt.subplots(8, 8, figsize=(30, 30))
             for j in range(min(8, all_x.shape[0])):
