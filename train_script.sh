@@ -11,7 +11,7 @@
 #   --cluster-method kmeans
 uv run train.py \
   --dataset_name celebahq256 \
-  --cluster_dir ./results_celebahq \
+  # --cluster_dir ./results_celebahq \
   --model.hidden_size 768 \
   --model.patch_size 2 \
   --model.depth 12 \
