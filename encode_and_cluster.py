@@ -22,7 +22,7 @@ import csv
 import numpy as np
 import os
 
-from sklearn.cluster import MiniBatchKMeans
+from sklearn.cluster import MiniBatchKMeans, KMeans
 from tqdm import tqdm
 from utils.datasets import get_dataset
 
@@ -129,8 +129,26 @@ def encode_with_resnet(loader, dataset, device='cuda'):
     return latents, paths
 
 
-def cluster_latents(latents, n_clusters=100, batch_size=1024, random_state=42):
-    kmeans = MiniBatchKMeans(n_clusters=n_clusters, batch_size=batch_size, random_state=random_state)
+def cluster_latents(latents, n_clusters=100, batch_size=1024, random_state=42, method='minibatch'):
+    """
+    Cluster latents using either MiniBatchKMeans (faster, memory-friendly) or
+    KMeans (standard sklearn KMeans).
+
+    Args:
+        latents: (N, D) array of features.
+        n_clusters: number of clusters.
+        batch_size: batch size for MiniBatchKMeans (ignored for KMeans).
+        random_state: RNG seed.
+        method: 'minibatch' or 'kmeans'.
+
+    Returns:
+        kmeans estimator, assignments (N,)
+    """
+    method = method.lower()
+    if method == 'kmeans':
+        kmeans = KMeans(n_clusters=n_clusters, random_state=random_state)
+    else:
+        kmeans = MiniBatchKMeans(n_clusters=n_clusters, batch_size=batch_size, random_state=random_state)
     assignments = kmeans.fit_predict(latents)
     return kmeans, assignments
 
@@ -162,6 +180,8 @@ def parse_args():
     p.add_argument("--device", default="cuda")
     p.add_argument("--num-workers", type=int, default=4)
     p.add_argument("--max-examples", type=int, default=10)
+    p.add_argument("--cluster-method", choices=['minibatch', 'kmeans'], default='minibatch',
+                   help="Which scikit-learn clustering method to use: 'minibatch' (default) or 'kmeans'")
     return p.parse_args()
 
 
@@ -193,7 +213,10 @@ def main():
             latents, paths = encode_with_stablevae(loader, dataset, image_size=args.image_size, batch_size=safe_batch)
 
     print("Clustering...")
-    kmeans, assignments = cluster_latents(latents, n_clusters=args.n_clusters)
+    kmeans, assignments = cluster_latents(latents, n_clusters=args.n_clusters,
+                                          batch_size=args.batch_size,
+                                          random_state=42,
+                                          method=args.cluster_method)
     csv_path = save_results(args.out_dir, latents, paths, assignments, kmeans)
     print(f"Saved assignments to {csv_path}")
 

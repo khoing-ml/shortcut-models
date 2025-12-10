@@ -25,8 +25,10 @@ uv run train_local.py \
   --batch_size 64 \
   --dataset_name celebahq256 \
   --fid_stats data/celeba256_fidstats_ours.npz \
-  --max_steps 200000 \
+  --max_steps 400001 \
   --eval_interval 1000 \
   --log_interval 1000 \
   --model.use_cluster_neighborhoods=True \
-  --model.locality_weight=1.0
+  --model.locality_weight=1.0 \
+  --save_dir "./checkpoints_celebahq_local" \
+  --save_interval 35000 \
