@@ -96,7 +96,7 @@ def eval_model(
                 batch_images_n = vae_encode(key, batch_images_n)
             batch_images_sharded, batch_labels_sharded = shard_data(batch_images_n, batch_labels_n)
             _, info = update(train_state, train_state_teacher, batch_images_sharded, batch_labels_sharded, force_t=t, force_dt=d)
-            info = jax.experimental.multihost_utils.process_allgather(info)[0]
+            info = jax.experimental.multihost_utils.process_allgather(info)
             if infos is None:
                 infos = jax.tree_util.tree_map(lambda x: [x], info)
             else:
@@ -138,9 +138,9 @@ def eval_model(
             x_t, t, dt_base = shard_data(x_t, t, dt_base)
             v_pred = call_model(train_state, x_t, t, dt_base, valid_labels_sharded if FLAGS.model.cfg_scale != 0 else labels_uncond)
             x_1_pred = x_t + v_pred * (1-t[..., None, None, None])
-            x_t = jax.experimental.multihost_utils.process_allgather(x_t)[0]
-            x_1_pred = jax.experimental.multihost_utils.process_allgather(x_1_pred)[0]
-            valid_images_gather = jax.experimental.multihost_utils.process_allgather(shard_data(valid_images_tile))[0]
+            x_t = jax.experimental.multihost_utils.process_allgather(x_t)
+            x_1_pred = jax.experimental.multihost_utils.process_allgather(x_1_pred)
+            valid_images_gather = jax.experimental.multihost_utils.process_allgather(shard_data(valid_images_tile))
             if jax.process_index() == 0:
                 # valid_images_gather is [global_batchsize] wide. We'll slice it
                 # into `num_procs` chunks and create one figure per process so
@@ -216,7 +216,7 @@ def eval_model(
                 v = v_uncond + FLAGS.model.cfg_scale * (v_cond - v_uncond)
             x = x + v * delta_t
             if denoise_timesteps <= 8 or ti % (denoise_timesteps // 8) == 0 or ti == FLAGS.model.denoise_timesteps-1:
-                np_x = jax.experimental.multihost_utils.process_allgather(x)[0]
+                np_x = jax.experimental.multihost_utils.process_allgather(x)
                 all_x.append(np.array(np_x))
         all_x = np.stack(all_x, axis=1) # [batch, timesteps, etc..]
         all_x = all_x[:, -8:]
@@ -264,7 +264,7 @@ def eval_model(
             x = jax.image.resize(x, (x.shape[0], 299, 299, 3), method='bilinear', antialias=False)
             x = jnp.clip(x, -1, 1)
             acts = get_fid_activations(x)[..., 0, 0, :] # [devices, batch//devices, 2048]
-            acts = jax.experimental.multihost_utils.process_allgather(acts)[0]
+            acts = jax.experimental.multihost_utils.process_allgather(acts)
             acts = np.array(acts)
             activations.append(acts)
         return activations
