@@ -101,7 +101,8 @@ def main(_):
 
     # Create wandb logger
     if jax.process_index() == 0 and FLAGS.mode == 'train':
-        setup_wandb(FLAGS.model.to_dict(), **FLAGS.wandb)
+        # Ensure we pass a plain dict (not FieldReference/ConfigDict wrappers)
+        setup_wandb(FLAGS.model.to_dict(), **(FLAGS.wandb.to_dict() if hasattr(FLAGS.wandb, 'to_dict') else FLAGS.wandb))
         
     dataset = get_dataset(FLAGS.dataset_name, local_batch_size, True, FLAGS.debug_overfit)
     dataset_valid = get_dataset(FLAGS.dataset_name, local_batch_size, False, FLAGS.debug_overfit)
@@ -337,51 +338,59 @@ def main(_):
     # Train Loop
     ###################################
 
-    for i in tqdm.tqdm(range(1 + start_step, FLAGS.max_steps + 1 + start_step),
-                       smoothing=0.1,
-                       dynamic_ncols=True):
-        
-        # Sample data.
-        if not FLAGS.debug_overfit or i == 1:
-            batch_images, batch_labels = shard_data(*next(dataset))
-            if FLAGS.model.use_stable_vae and 'latent' not in FLAGS.dataset_name:
-                vae_rng, vae_key = jax.random.split(vae_rng)
-                batch_images = vae_encode(vae_key, batch_images)
+    try:
+        for i in tqdm.tqdm(range(1 + start_step, FLAGS.max_steps + 1 + start_step),
+                           smoothing=0.1,
+                           dynamic_ncols=True):
 
-        # Train update.
-        train_state, update_info = update(train_state, batch_images, batch_labels, cluster_centroids)
+            # Sample data.
+            if not FLAGS.debug_overfit or i == 1:
+                batch_images, batch_labels = shard_data(*next(dataset))
+                if FLAGS.model.use_stable_vae and 'latent' not in FLAGS.dataset_name:
+                    vae_rng, vae_key = jax.random.split(vae_rng)
+                    batch_images = vae_encode(vae_key, batch_images)
 
-        if i % FLAGS.log_interval == 0 or i == 1:
-            update_info = jax.device_get(update_info)
-            update_info = jax.tree_util.tree_map(lambda x: np.array(x), update_info)
-            update_info = jax.tree_util.tree_map(lambda x: x.mean(), update_info)
-            train_metrics = {f'training/{k}': v for k, v in update_info.items()}
+            # Train update.
+            train_state, update_info = update(train_state, batch_images, batch_labels, cluster_centroids)
 
-            valid_images, valid_labels = shard_data(*next(dataset_valid))
-            if FLAGS.model.use_stable_vae and 'latent' not in FLAGS.dataset_name:
-                valid_images = vae_encode(vae_rng, valid_images)
-            _, valid_update_info = update(train_state, valid_images, valid_labels, cluster_centroids)
-            valid_update_info = jax.device_get(valid_update_info)
-            valid_update_info = jax.tree_util.tree_map(lambda x: x.mean(), valid_update_info)
-            train_metrics['training/loss_valid'] = valid_update_info['loss']
+            if i % FLAGS.log_interval == 0 or i == 1:
+                update_info = jax.device_get(update_info)
+                update_info = jax.tree_util.tree_map(lambda x: np.array(x), update_info)
+                update_info = jax.tree_util.tree_map(lambda x: x.mean(), update_info)
+                train_metrics = {f'training/{k}': v for k, v in update_info.items()}
 
-            if jax.process_index() == 0:
-                wandb.log(train_metrics, step=i)
+                valid_images, valid_labels = shard_data(*next(dataset_valid))
+                if FLAGS.model.use_stable_vae and 'latent' not in FLAGS.dataset_name:
+                    valid_images = vae_encode(vae_rng, valid_images)
+                _, valid_update_info = update(train_state, valid_images, valid_labels, cluster_centroids)
+                valid_update_info = jax.device_get(valid_update_info)
+                valid_update_info = jax.tree_util.tree_map(lambda x: x.mean(), valid_update_info)
+                train_metrics['training/loss_valid'] = valid_update_info['loss']
 
-        if i % FLAGS.eval_interval == 0:
-            eval_model(FLAGS, train_state, train_state_teacher, i, dataset, dataset_valid, shard_data, vae_encode, vae_decode, 
-                      lambda ts, tst, imgs, lbls: update(ts, imgs, lbls, cluster_centroids),
-                      get_fid_activations, imagenet_labels, visualize_labels, 
-                      fid_from_stats, truth_fid_stats)
+                if jax.process_index() == 0:
+                    wandb.log(train_metrics, step=i)
 
-        if i % FLAGS.save_interval == 0 and FLAGS.save_dir is not None:
-            train_state_gather = jax.experimental.multihost_utils.process_allgather(train_state)
-            if jax.process_index() == 0:
-                cp = Checkpoint(FLAGS.save_dir+str(train_state_gather.step+1), parallel=False)
-                cp.train_state = train_state_gather
-                cp.save()
-                del cp
-            del train_state_gather
+            if i % FLAGS.eval_interval == 0:
+                eval_model(FLAGS, train_state, train_state_teacher, i, dataset, dataset_valid, shard_data, vae_encode, vae_decode, 
+                          lambda ts, tst, imgs, lbls: update(ts, imgs, lbls, cluster_centroids),
+                          get_fid_activations, imagenet_labels, visualize_labels, 
+                          fid_from_stats, truth_fid_stats)
+
+            if i % FLAGS.save_interval == 0 and FLAGS.save_dir is not None:
+                train_state_gather = jax.experimental.multihost_utils.process_allgather(train_state)
+                if jax.process_index() == 0:
+                    cp = Checkpoint(FLAGS.save_dir+str(train_state_gather.step+1), parallel=False)
+                    cp.train_state = train_state_gather
+                    cp.save()
+                    del cp
+                del train_state_gather
+    finally:
+        # Finish wandb run on the main process if it was initialized
+        if jax.process_index() == 0 and FLAGS.mode == 'train':
+            try:
+                wandb.finish()
+            except Exception:
+                pass
 
 if __name__ == '__main__':
     app.run(main)

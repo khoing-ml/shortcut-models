@@ -96,7 +96,7 @@ def eval_model(
                 batch_images_n = vae_encode(key, batch_images_n)
             batch_images_sharded, batch_labels_sharded = shard_data(batch_images_n, batch_labels_n)
             _, info = update(train_state, train_state_teacher, batch_images_sharded, batch_labels_sharded, force_t=t, force_dt=d)
-            info = jax.experimental.multihost_utils.process_allgather(info)
+            info = jax.experimental.multihost_utils.process_allgather(info)[0]
             if infos is None:
                 infos = jax.tree_util.tree_map(lambda x: [x], info)
             else:
@@ -138,20 +138,52 @@ def eval_model(
             x_t, t, dt_base = shard_data(x_t, t, dt_base)
             v_pred = call_model(train_state, x_t, t, dt_base, valid_labels_sharded if FLAGS.model.cfg_scale != 0 else labels_uncond)
             x_1_pred = x_t + v_pred * (1-t[..., None, None, None])
-            x_t = jax.experimental.multihost_utils.process_allgather(x_t)
-            x_1_pred = jax.experimental.multihost_utils.process_allgather(x_1_pred)
-            valid_images_gather = jax.experimental.multihost_utils.process_allgather(shard_data(valid_images_tile))
+            x_t = jax.experimental.multihost_utils.process_allgather(x_t)[0]
+            x_1_pred = jax.experimental.multihost_utils.process_allgather(x_1_pred)[0]
+            valid_images_gather = jax.experimental.multihost_utils.process_allgather(shard_data(valid_images_tile))[0]
             if jax.process_index() == 0:
-                # valid_images_gather is [batchsize] wide. Every 8 corresponds to a timescale.
-                fig, axs = plt.subplots(8, 4*3, figsize=(30, 30))
-                
-                for j in range(min(4, valid_images_gather.shape[0] // 8)):
-                    for k in range(8):
-                        axs[k,3*j].imshow(process_img(valid_images_gather[j*8 + k]), vmin=0, vmax=1)
-                        axs[k,3*j+1].imshow(process_img(x_t[j*8 + k]), vmin=0, vmax=1)
-                        axs[k,3*j+2].imshow(process_img(x_1_pred[j*8 + k]), vmin=0, vmax=1)
-                wandb.log({f'reconstruction_{dt_type}': wandb.Image(fig)}, step=step)
-                plt.close(fig)
+                # valid_images_gather is [global_batchsize] wide. We'll slice it
+                # into `num_procs` chunks and create one figure per process so
+                # you get one upload per TPU process (visible in a single W&B run).
+                num_procs = jax.process_count()
+                total = valid_images_gather.shape[0]
+                per_proc = total // num_procs if num_procs > 0 else total
+                if per_proc == 0:
+                    # Nothing to split sensibly; fall back to single figure
+                    per_proc = total
+                    num_procs = 1
+
+                for p in range(num_procs):
+                    start = p * per_proc
+                    end = start + per_proc
+                    # clamp end to available images
+                    end = min(end, total)
+                    proc_count = end - start
+                    if proc_count <= 0:
+                        continue
+
+                    groups = proc_count // 8
+                    if groups == 0:
+                        # If fewer than 8 images for this proc, show them as one group
+                        groups = 1
+                    cols = groups * 3
+                    fig, axs = plt.subplots(8, cols, figsize=(7.5 * groups, 30))
+                    # Ensure axs is 2D-indexable: for some matplotlib versions
+                    # a single-row/col may return a 1-D array.
+                    if axs.ndim == 1:
+                        axs = np.expand_dims(axs, 1)
+
+                    for j in range(groups):
+                        for k in range(min(8, proc_count - j * 8)):
+                            idx = start + j * 8 + k
+                            if idx >= end:
+                                break
+                            axs[k, 3 * j].imshow(process_img(valid_images_gather[idx]), vmin=0, vmax=1)
+                            axs[k, 3 * j + 1].imshow(process_img(x_t[idx]), vmin=0, vmax=1)
+                            axs[k, 3 * j + 2].imshow(process_img(x_1_pred[idx]), vmin=0, vmax=1)
+
+                    wandb.log({f'reconstruction_{dt_type}_proc{p}': wandb.Image(fig)}, step=step)
+                    plt.close(fig)
 
     print("Denoising at N steps")
 
@@ -184,7 +216,7 @@ def eval_model(
                 v = v_uncond + FLAGS.model.cfg_scale * (v_cond - v_uncond)
             x = x + v * delta_t
             if denoise_timesteps <= 8 or ti % (denoise_timesteps // 8) == 0 or ti == FLAGS.model.denoise_timesteps-1:
-                np_x = jax.experimental.multihost_utils.process_allgather(x)
+                np_x = jax.experimental.multihost_utils.process_allgather(x)[0]
                 all_x.append(np.array(np_x))
         all_x = np.stack(all_x, axis=1) # [batch, timesteps, etc..]
         all_x = all_x[:, -8:]
@@ -232,7 +264,7 @@ def eval_model(
             x = jax.image.resize(x, (x.shape[0], 299, 299, 3), method='bilinear', antialias=False)
             x = jnp.clip(x, -1, 1)
             acts = get_fid_activations(x)[..., 0, 0, :] # [devices, batch//devices, 2048]
-            acts = jax.experimental.multihost_utils.process_allgather(acts)
+            acts = jax.experimental.multihost_utils.process_allgather(acts)[0]
             acts = np.array(acts)
             activations.append(acts)
         return activations
