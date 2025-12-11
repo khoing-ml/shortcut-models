@@ -177,10 +177,14 @@ def main(_):
         cp = Checkpoint(FLAGS.load_dir)
         replace_dict = cp.load_as_dict()['train_state']
         del replace_dict['opt_state'] # Debug
+        # For FSDP: loaded params are gathered (unsharded), need to reshard them
+        # Use jax.device_put to properly distribute according to train_state_sharding
+        replace_dict['params'] = jax.device_put(replace_dict['params'], train_state_sharding.params)
+        if 'params_ema' in replace_dict:
+            replace_dict['params_ema'] = jax.device_put(replace_dict['params_ema'], train_state_sharding.params_ema)
         train_state = train_state.replace(**replace_dict)
         if FLAGS.wandb.run_id != "None": # If we are continuing a run.
             start_step = train_state.step
-        train_state = jax.jit(lambda x : x, out_shardings=train_state_sharding)(train_state)
         print("Loaded model with step", train_state.step)
         train_state = train_state.replace(step=0)
         jax.debug.visualize_array_sharding(train_state.params['FinalLayer_0']['Dense_0']['kernel'])
