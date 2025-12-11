@@ -133,7 +133,13 @@ def get_targets(FLAGS, key, train_state, images, labels, force_t=-1, force_dt=-1
         valid_mask = jnp.ones(batch_size, dtype=bool)
         
         info['cluster_distances'] = jnp.min(distances, axis=1).mean()
-        info['unique_clusters_used'] = jnp.unique(nearest_idx).shape[0]
+        # jnp.unique is not JIT-friendly because it can require concrete sizes.
+        # Compute the number of unique clusters used in a JIT-compatible way
+        # by creating a boolean mask over the known number of clusters.
+        num_clusters = int(FLAGS.model['num_clusters'])
+        used = jnp.zeros((num_clusters,), dtype=jnp.bool_)
+        used = used.at[nearest_idx].set(True)
+        info['unique_clusters_used'] = jnp.sum(used.astype(jnp.int32))
         
     # Option 2: Use class-conditional centroids (simple approach using labels)
     # Option 2: Use class-conditional centroids (simple approach using labels)
