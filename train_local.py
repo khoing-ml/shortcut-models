@@ -262,74 +262,49 @@ def main(_):
         def loss_fn(grad_params):
             v_prime, logvars, activations = train_state.call_model(x_t, t, dt_base, labels_dropped, train=True, rngs={'dropout': dropout_key}, params=grad_params, return_activations=True)
             mse_v = jnp.mean((v_prime - v_t) ** 2, axis=(1, 2, 3))
-            loss = jnp.mean(mse_v)
 
-            loss_info = {
-                'loss': loss,
-                'v_magnitude_prime': jnp.sqrt(jnp.mean(jnp.square(v_prime))),
-                **{'activations/' + k : jnp.sqrt(jnp.mean(jnp.square(v))) for k, v in activations.items()},
-            }
-
-            # Add locality consistency loss
-            # Check if locality information is available in info dict
+            # Add locality consistency loss per-sample
             if 'locality_u_t' in info and 'locality_s_t' in info:
                 u_t = info['locality_u_t']
                 s_t = info['locality_s_t']
-                v_u = info['locality_v_u']
-                v_s = info['locality_v_s']
                 locality_weight = info['locality_weight']
                 locality_valid_mask = info.get('locality_valid_mask', None)
                 
-                # Get number of bootstrap samples
                 bootstrap_size = FLAGS.batch_size // FLAGS.model['bootstrap_every']
                 bst_size_data = FLAGS.batch_size - bootstrap_size
                 
-                # Only apply locality loss to non-bootstrap samples
                 if bst_size_data > 0:
-                    # Extract non-bootstrap portion
-                    u_t_flow = u_t[:bst_size_data]
-                    s_t_flow = s_t[:bst_size_data]
-                    t_flow = t[bootstrap_size:]
-                    dt_base_flow = dt_base[bootstrap_size:]
-                    labels_flow = labels_dropped[bootstrap_size:]
+                    # Merge locality inputs to match batch ordering: [bootstrap, flow]
+                    u_t_merged = jnp.concatenate([u_t[:bootstrap_size], u_t[bootstrap_size:bootstrap_size+bst_size_data]], axis=0)
+                    s_t_merged = jnp.concatenate([s_t[:bootstrap_size], s_t[bootstrap_size:bootstrap_size+bst_size_data]], axis=0)
+                    
                     if locality_valid_mask is not None:
-                        valid_mask_flow = locality_valid_mask[:bst_size_data]
+                        valid_mask_merged = jnp.concatenate([locality_valid_mask[:bootstrap_size], locality_valid_mask[bootstrap_size:bootstrap_size+bst_size_data]], axis=0)
                     else:
-                        valid_mask_flow = jnp.ones(bst_size_data, dtype=bool)
+                        valid_mask_merged = jnp.ones(FLAGS.batch_size, dtype=bool)
                     
-                    # Predict velocity at u_t
-                    v_u_pred, _, _ = train_state.call_model(
-                        u_t_flow, t_flow, dt_base_flow, labels_flow, 
-                        train=True, rngs={'dropout': dropout_key}, params=grad_params, return_activations=True
-                    )
+                    # Predict velocities at locality points
+                    v_u_pred, _, _ = train_state.call_model(u_t_merged, t, dt_base, labels_dropped, train=True, rngs={'dropout': dropout_key}, params=grad_params, return_activations=True)
+                    v_s_pred, _, _ = train_state.call_model(s_t_merged, t, dt_base, labels_dropped, train=True, rngs={'dropout': dropout_key}, params=grad_params, return_activations=True)
                     
-                    # Predict velocity at s_t (neighbor/perturbed point)
-                    v_s_pred, _, _ = train_state.call_model(
-                        s_t_flow, t_flow, dt_base_flow, labels_flow, 
-                        train=True, rngs={'dropout': dropout_key}, params=grad_params, return_activations=True
-                    )
-                    
-                    # Compute locality loss: ||v(u_t, t) - v(s_t, t)||²
-                    # Two nearby points (from same cluster or perturbed noise) should have similar velocities
+                    # Compute per-sample locality MSE and add to mse_v
                     locality_mse = jnp.mean((v_u_pred - v_s_pred) ** 2, axis=(1, 2, 3))
-                    # Apply valid mask (only for valid pairs)
-                    locality_mse_masked = jnp.where(valid_mask_flow, locality_mse, 0.0)
-                    locality_loss = jnp.sum(locality_mse_masked) / jnp.maximum(jnp.sum(valid_mask_flow), 1.0)
+                    locality_mse_masked = jnp.where(valid_mask_merged, locality_mse, 0.0)
                     
-                    # Add to total loss
-                    loss = loss + locality_weight * locality_loss
-                    loss_info['loss_locality'] = locality_loss
-                    loss_info['locality_valid_ratio'] = jnp.mean(valid_mask_flow.astype(jnp.float32))
-                    # Also track how different the actual target velocities are
-                    target_diff = jnp.mean((v_u[:bst_size_data] - v_s[:bst_size_data]) ** 2, axis=(1, 2, 3))
-                    loss_info['locality_target_diff'] = jnp.mean(target_diff)
-                    # Record total loss (flow + locality) separately so logs reflect true objective
-                    loss_info['loss_total'] = loss
+                    # Add locality MSE per-sample to mse_v
+                    mse_v = mse_v + locality_weight * locality_mse_masked
 
-            # Track bootstrap vs flow losses
+            # Now compute loss and split (like train.py)
+            loss = jnp.mean(mse_v)
             bootstrap_size = FLAGS.batch_size // FLAGS.model['bootstrap_every']
-            loss_info['loss_flow'] = jnp.mean(mse_v[bootstrap_size:])
-            loss_info['loss_bootstrap'] = jnp.mean(mse_v[:bootstrap_size])
+            
+            loss_info = {
+                'loss': loss,
+                'loss_flow': jnp.mean(mse_v[bootstrap_size:]),
+                'loss_bootstrap': jnp.mean(mse_v[:bootstrap_size]),
+                'v_magnitude_prime': jnp.sqrt(jnp.mean(jnp.square(v_prime))),
+                **{'activations/' + k : jnp.sqrt(jnp.mean(jnp.square(v))) for k, v in activations.items()},
+            }
             
             return loss, loss_info
         

@@ -291,8 +291,8 @@ def main(_):
 
         if i % FLAGS.log_interval == 0 or i == 1:
             update_info = jax.device_get(update_info)
-            update_info = jax.tree_util.tree_map(lambda x: np.array(x), update_info)
-            update_info = jax.tree_util.tree_map(lambda x: x.mean(), update_info)
+            update_info = jax.tree_map(lambda x: np.array(x), update_info)
+            update_info = jax.tree_map(lambda x: x.mean(), update_info)
             train_metrics = {f'training/{k}': v for k, v in update_info.items()}
 
             valid_images, valid_labels = shard_data(*next(dataset_valid))
@@ -300,7 +300,7 @@ def main(_):
                 valid_images = vae_encode(vae_rng, valid_images)
             _, valid_update_info = update(train_state, train_state_teacher, valid_images, valid_labels)
             valid_update_info = jax.device_get(valid_update_info)
-            valid_update_info = jax.tree_util.tree_map(lambda x: x.mean(), valid_update_info)
+            valid_update_info = jax.tree_map(lambda x: x.mean(), valid_update_info)
             train_metrics['training/loss_valid'] = valid_update_info['loss']
 
             if jax.process_index() == 0:
