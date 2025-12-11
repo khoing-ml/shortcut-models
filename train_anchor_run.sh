@@ -11,10 +11,10 @@ uv run encode_and_cluster.py \
   --dataset-name celebahq256 \
   --n-samples 30000 \
   --batch-size 8 \
-  --image-size 512 \
+  --image-size 256 \
   --encoder stablevae \
   --out-dir results_celebahq \
-  --n-clusters 500 \
+  --n-clusters 1024 \
   --cluster-method kmeans
 PYTHON=python3
 SCRIPT=./train_anchor.py
@@ -34,7 +34,7 @@ ARGS=(
   --model.train_type shortcut
   --model.sharding fsdp
   --model.bootstrap_every 4
-  --model.num_clusters 500
+  --model.num_clusters 1024
   --batch_size 64
   --fid_stats data/celeba256_fidstats_ours.npz
   --max_steps 400001

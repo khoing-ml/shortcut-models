@@ -320,10 +320,11 @@ def main(_):
                     loss = loss + locality_weight * locality_loss
                     loss_info['loss_locality'] = locality_loss
                     loss_info['locality_valid_ratio'] = jnp.mean(valid_mask_flow.astype(jnp.float32))
-                    
                     # Also track how different the actual target velocities are
                     target_diff = jnp.mean((v_u[:bst_size_data] - v_s[:bst_size_data]) ** 2, axis=(1, 2, 3))
                     loss_info['locality_target_diff'] = jnp.mean(target_diff)
+                    # Record total loss (flow + locality) separately so logs reflect true objective
+                    loss_info['loss_total'] = loss
 
             # Track bootstrap vs flow losses
             bootstrap_size = FLAGS.batch_size // FLAGS.model['bootstrap_every']
