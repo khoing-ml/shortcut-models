@@ -168,8 +168,8 @@ def main(_):
 
     data_sharding, train_state_sharding, no_shard, shard_data, global_to_local = create_sharding(FLAGS.model.sharding, train_state_shape)
     train_state = jax.jit(init, out_shardings=train_state_sharding)(rng)
-    jax.debug.visualize_array_sharding(train_state.params['FinalLayer_0']['Dense_0']['kernel'])
-    jax.debug.visualize_array_sharding(train_state.params['TimestepEmbedder_1']['Dense_0']['kernel'])
+    jax.debug.inspect_array_sharding(train_state.params['FinalLayer_0']['Dense_0']['kernel'], callback=lambda s: print(f"FinalLayer_0/Dense_0/kernel sharding: {s}"))
+    jax.debug.inspect_array_sharding(train_state.params['TimestepEmbedder_1']['Dense_0']['kernel'], callback=lambda s: print(f"TimestepEmbedder_1/Dense_0/kernel sharding: {s}"))
     jax.experimental.multihost_utils.assert_equal(train_state.params['TimestepEmbedder_1']['Dense_0']['kernel'])
     start_step = 1
 
@@ -183,7 +183,7 @@ def main(_):
         train_state = jax.jit(lambda x : x, out_shardings=train_state_sharding)(train_state)
         print("Loaded model with step", train_state.step)
         train_state = train_state.replace(step=0)
-        jax.debug.visualize_array_sharding(train_state.params['FinalLayer_0']['Dense_0']['kernel'])
+        jax.debug.inspect_array_sharding(train_state.params['FinalLayer_0']['Dense_0']['kernel'], callback=lambda s: print(f"FinalLayer_0/Dense_0/kernel sharding: {s}"))
         del cp
 
     if FLAGS.model.train_type == 'progressive' or FLAGS.model.train_type == 'consistency-distillation':
