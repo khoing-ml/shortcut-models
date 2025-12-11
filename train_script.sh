@@ -10,22 +10,19 @@
 #   --n-clusters 100 \
 #   --cluster-method kmeans
 uv run train.py \
-  --dataset_name celebahq256 \
-  # --cluster_dir ./results_celebahq \
   --model.hidden_size 768 \
   --model.patch_size 2 \
   --model.depth 12 \
   --model.num_heads 12 \
   --model.mlp_ratio 4 \
+  --dataset_name celebahq256 \
+  --fid_stats data/celeba256_fidstats_ours.npz \
   --model.cfg_scale 0 \
   --model.class_dropout_prob 1 \
   --model.num_classes 1 \
-  --model.train_type shortcut \
-  --model.sharding fsdp \
-  --model.bootstrap_every 4 \
   --batch_size 64 \
-  --dataset_name celebahq256 \
-  --fid_stats data/celeba256_fidstats_ours.npz \
+  --max_steps 410_000 \
+  --model.train_type shortcut \
   --max_steps 400001 \
   --eval_interval 5000 \
   --log_interval 5000 \

@@ -42,7 +42,7 @@ ARGS=(
   --log_interval 5000
   --save_dir ./checkpoints_celebahq_anchor
   --save_interval 35000
-  --use_cluster_centroids true
+  --model.use_cluster_centroids=True
 )
 
 # Allow passing extra args on the command line to override or extend
