@@ -168,8 +168,8 @@ def main(_):
 
     data_sharding, train_state_sharding, no_shard, shard_data, global_to_local = create_sharding(FLAGS.model.sharding, train_state_shape)
     train_state = jax.jit(init, out_shardings=train_state_sharding)(rng)
-    jax.debug.inspect_array_sharding(train_state.params['FinalLayer_0']['Dense_0']['kernel'], callback=lambda s: print(f"FinalLayer_0/Dense_0/kernel sharding: {s}"))
-    jax.debug.inspect_array_sharding(train_state.params['TimestepEmbedder_1']['Dense_0']['kernel'], callback=lambda s: print(f"TimestepEmbedder_1/Dense_0/kernel sharding: {s}"))
+    jax.debug.visualize_array_sharding(train_state.params['FinalLayer_0']['Dense_0']['kernel'])
+    jax.debug.visualize_array_sharding(train_state.params['TimestepEmbedder_1']['Dense_0']['kernel'])
     jax.experimental.multihost_utils.assert_equal(train_state.params['TimestepEmbedder_1']['Dense_0']['kernel'])
     start_step = 1
 
@@ -183,7 +183,7 @@ def main(_):
         train_state = jax.jit(lambda x : x, out_shardings=train_state_sharding)(train_state)
         print("Loaded model with step", train_state.step)
         train_state = train_state.replace(step=0)
-        jax.debug.inspect_array_sharding(train_state.params['FinalLayer_0']['Dense_0']['kernel'], callback=lambda s: print(f"FinalLayer_0/Dense_0/kernel sharding: {s}"))
+        jax.debug.visualize_array_sharding(train_state.params['FinalLayer_0']['Dense_0']['kernel'])
         del cp
 
     if FLAGS.model.train_type == 'progressive' or FLAGS.model.train_type == 'consistency-distillation':
@@ -291,8 +291,8 @@ def main(_):
 
         if i % FLAGS.log_interval == 0 or i == 1:
             update_info = jax.device_get(update_info)
-            update_info = jax.tree_map(lambda x: np.array(x), update_info)
-            update_info = jax.tree_map(lambda x: x.mean(), update_info)
+            update_info = jax.tree_util.tree_map(lambda x: np.array(x), update_info)
+            update_info = jax.tree_util.tree_map(lambda x: x.mean(), update_info)
             train_metrics = {f'training/{k}': v for k, v in update_info.items()}
 
             valid_images, valid_labels = shard_data(*next(dataset_valid))
@@ -300,7 +300,7 @@ def main(_):
                 valid_images = vae_encode(vae_rng, valid_images)
             _, valid_update_info = update(train_state, train_state_teacher, valid_images, valid_labels)
             valid_update_info = jax.device_get(valid_update_info)
-            valid_update_info = jax.tree_map(lambda x: x.mean(), valid_update_info)
+            valid_update_info = jax.tree_util.tree_map(lambda x: x.mean(), valid_update_info)
             train_metrics['training/loss_valid'] = valid_update_info['loss']
 
             if jax.process_index() == 0:

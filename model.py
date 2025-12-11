@@ -23,9 +23,15 @@ def xavier_uniform_pytorchlike():
         if len(shape) == 2: # Dense, [in, out]
             fan_in = shape[0]
             fan_out = shape[1]
+        elif len(shape) == 3: # Dense with sharding, [shard, in, out]
+            fan_in = shape[1]
+            fan_out = shape[2]
         elif len(shape) == 4: # Conv, [k, k, in, out]. Assumes patch-embed style conv.
             fan_in = shape[0] * shape[1] * shape[2]
             fan_out = shape[3]
+        elif len(shape) == 5: # Conv with sharding, [shard, k, k, in, out]
+            fan_in = shape[1] * shape[2] * shape[3]
+            fan_out = shape[4]
         else:
             raise ValueError(f"Invalid shape {shape}")
 
