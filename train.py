@@ -175,14 +175,26 @@ def main(_):
 
     if FLAGS.load_dir is not None:
         cp = Checkpoint(FLAGS.load_dir)
-        replace_dict = cp.load_as_dict()['train_state']
-        del replace_dict['opt_state'] # Debug
-        # For FSDP: loaded params are gathered (unsharded), need to reshard them
-        # Use jax.device_put to properly distribute according to train_state_sharding
-        replace_dict['params'] = jax.device_put(replace_dict['params'], train_state_sharding.params)
-        if 'params_ema' in replace_dict:
-            replace_dict['params_ema'] = jax.device_put(replace_dict['params_ema'], train_state_sharding.params_ema)
-        train_state = train_state.replace(**replace_dict)
+        loaded_data = cp.load_as_dict()['train_state']
+        del loaded_data['opt_state'] # Debug
+        
+        # Handle shape mismatches from process_allgather adding batch dimensions
+        def fix_loaded_param(initialized, loaded):
+            """Remove extra dimensions added during gather if needed."""
+            if hasattr(loaded, 'shape') and hasattr(initialized, 'shape'):
+                # If loaded has an extra leading dimension of size 1, squeeze it
+                if len(loaded.shape) == len(initialized.shape) + 1 and loaded.shape[0] == 1:
+                    return jnp.squeeze(loaded, axis=0)
+            return loaded
+        
+        loaded_params = jax.tree_util.tree_map(fix_loaded_param, train_state.params, loaded_data['params'])
+        loaded_params_ema = jax.tree_util.tree_map(fix_loaded_param, train_state.params_ema, loaded_data['params_ema'])
+        
+        # Now reshard the loaded params to match the current sharding strategy
+        loaded_params = jax.jit(lambda x: x, out_shardings=train_state_sharding.params)(loaded_params)
+        loaded_params_ema = jax.jit(lambda x: x, out_shardings=train_state_sharding.params_ema)(loaded_params_ema)
+        
+        train_state = train_state.replace(params=loaded_params, params_ema=loaded_params_ema, step=loaded_data['step'])
         if FLAGS.wandb.run_id != "None": # If we are continuing a run.
             start_step = train_state.step
         print("Loaded model with step", train_state.step)
