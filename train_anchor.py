@@ -310,7 +310,11 @@ def main(_):
             bootstrap_size = FLAGS.batch_size // FLAGS.model['bootstrap_every']
             loss_info['loss_flow'] = jnp.mean(mse_v[bootstrap_size:])
             loss_info['loss_bootstrap'] = jnp.mean(mse_v[:bootstrap_size])
-            
+            # Record total loss after any additions (e.g., anchor loss).
+            # Keep the original 'loss' key as the base MSE; expose the final
+            # optimized objective under 'loss_total'.
+            loss_info['loss_total'] = loss
+
             return loss, loss_info
         
         grads, new_info = jax.grad(loss_fn, has_aux=True)(train_state.params)
