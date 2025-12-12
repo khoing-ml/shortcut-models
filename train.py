@@ -195,7 +195,7 @@ def main(_):
         loaded_params_ema = jax.jit(lambda x: x, out_shardings=train_state_sharding.params_ema)(loaded_params_ema)
         
         train_state = train_state.replace(params=loaded_params, params_ema=loaded_params_ema, step=loaded_data['step'])
-        start_step = train_state.step
+        start_step = int(train_state.step.item())
         print("Loaded model with step", train_state.step)
         jax.debug.visualize_array_sharding(train_state.params['FinalLayer_0']['Dense_0']['kernel'])
         del cp

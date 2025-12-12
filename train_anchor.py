@@ -209,7 +209,7 @@ def main(_):
         replace_dict = cp.load_as_dict()['train_state']
         del replace_dict['opt_state'] # Debug
         train_state = train_state.replace(**replace_dict)
-        start_step = train_state.step
+        start_step = int(train_state.step.item())
         train_state = jax.jit(lambda x : x, out_shardings=train_state_sharding)(train_state)
         print("Loaded model with step", train_state.step)
         jax.debug.visualize_array_sharding(train_state.params['FinalLayer_0']['Dense_0']['kernel'])
