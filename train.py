@@ -195,8 +195,7 @@ def main(_):
         loaded_params_ema = jax.jit(lambda x: x, out_shardings=train_state_sharding.params_ema)(loaded_params_ema)
         
         train_state = train_state.replace(params=loaded_params, params_ema=loaded_params_ema, step=loaded_data['step'])
-        if FLAGS.wandb.run_id != "None": # If we are continuing a run.
-            start_step = train_state.step
+        start_step = train_state.step
         print("Loaded model with step", train_state.step)
         jax.debug.visualize_array_sharding(train_state.params['FinalLayer_0']['Dense_0']['kernel'])
         del cp
@@ -327,7 +326,7 @@ def main(_):
                 train_state_teacher = jax.jit(lambda x : x, out_shardings=train_state_sharding)(train_state)
 
         if i % FLAGS.eval_interval == 0:
-            eval_model(FLAGS, train_state, train_state_teacher, i, dataset, dataset_valid, shard_data, vae_encode, vae_decode, update,
+            eval_model(FLAGS, train_state, train_state_teacher, int(train_state.step.item()), dataset, dataset_valid, shard_data, vae_encode, vae_decode, update,
                        get_fid_activations, imagenet_labels, visualize_labels, 
                        fid_from_stats, truth_fid_stats)
 

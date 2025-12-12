@@ -209,8 +209,7 @@ def main(_):
         replace_dict = cp.load_as_dict()['train_state']
         del replace_dict['opt_state'] # Debug
         train_state = train_state.replace(**replace_dict)
-        if FLAGS.wandb.run_id != "None": # If we are continuing a run.
-            start_step = train_state.step
+        start_step = train_state.step
         train_state = jax.jit(lambda x : x, out_shardings=train_state_sharding)(train_state)
         print("Loaded model with step", train_state.step)
         jax.debug.visualize_array_sharding(train_state.params['FinalLayer_0']['Dense_0']['kernel'])
@@ -374,7 +373,7 @@ def main(_):
                     wandb.log(train_metrics, step=int(train_state.step.item()))
 
             if i % FLAGS.eval_interval == 0:
-                eval_model(FLAGS, train_state, train_state_teacher, i, dataset, dataset_valid, shard_data, vae_encode, vae_decode, 
+                eval_model(FLAGS, train_state, train_state_teacher, int(train_state.step.item()), dataset, dataset_valid, shard_data, vae_encode, vae_decode, 
                           lambda ts, tst, imgs, lbls: update(ts, imgs, lbls, cluster_centroids),
                           get_fid_activations, imagenet_labels, visualize_labels, 
                           fid_from_stats, truth_fid_stats)
