@@ -385,7 +385,7 @@ def main(_):
                 print(f"Step {i}: Logging {len(train_metrics)} metrics to wandb")
                 print(f"Sample metrics: loss={train_metrics.get('training/loss', 'N/A'):.4f}")
                 if wandb.run is not None:
-                    wandb.log(train_metrics, step=train_state.step)
+                    wandb.log(train_metrics, step=int(train_state.step.item()))
                     print(f"Successfully logged to wandb")
                 else:
                     print("WARNING: wandb.run is None, not logging!")

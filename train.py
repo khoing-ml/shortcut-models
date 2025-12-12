@@ -319,7 +319,7 @@ def main(_):
             train_metrics['training/loss_valid'] = valid_update_info['loss']
 
             if jax.process_index() == 0:
-                wandb.log(train_metrics, step=train_state.step)
+                wandb.log(train_metrics, step=int(train_state.step.item()))
 
         if FLAGS.model['train_type'] == 'progressive':
             num_sections = np.log2(FLAGS.model['denoise_timesteps']).astype(jnp.int32)
