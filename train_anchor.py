@@ -213,7 +213,6 @@ def main(_):
             start_step = train_state.step
         train_state = jax.jit(lambda x : x, out_shardings=train_state_sharding)(train_state)
         print("Loaded model with step", train_state.step)
-        train_state = train_state.replace(step=0)
         jax.debug.visualize_array_sharding(train_state.params['FinalLayer_0']['Dense_0']['kernel'])
         del cp
 
@@ -372,7 +371,7 @@ def main(_):
                 train_metrics['training/loss_valid'] = valid_update_info['loss']
 
                 if jax.process_index() == 0:
-                    wandb.log(train_metrics, step=i)
+                    wandb.log(train_metrics, step=train_state.step)
 
             if i % FLAGS.eval_interval == 0:
                 eval_model(FLAGS, train_state, train_state_teacher, i, dataset, dataset_valid, shard_data, vae_encode, vae_decode, 

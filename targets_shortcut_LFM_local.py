@@ -157,17 +157,16 @@ def get_targets(FLAGS, key, train_state, images, labels, force_t=-1, force_dt=-1
         # Vectorized pairing using vmap
         pair_indices, valid_pair_mask = jax.vmap(find_cluster_pair)(jnp.arange(batch_size), pair_keys)
         
-        # Get paired samples
+        # Get paired samples - use SAME noise x_0 for both u_t and s_t
         x_1_paired = x_1[pair_indices]
-        x_0_paired = x_0  # Use same noise for fair comparison
         
-        # Compute u_t (original) and s_t (from cluster neighbor)
-        u_t = x_t  # Original trajectory point
-        s_t = (1 - (1 - 1e-5) * t_full) * x_0_paired + t_full * x_1_paired  # Neighbor's trajectory
+        # Compute u_t (original) and s_t (from cluster neighbor) with SAME noise
+        u_t = x_t  # Original trajectory point: x_t = (1-t)*x_0 + t*x_1
+        s_t = (1 - (1 - 1e-5) * t_full) * x_0 + t_full * x_1_paired  # Neighbor's trajectory with SAME x_0
         
         # Target velocities
-        v_u = v_t  # Original velocity
-        v_s = x_1_paired - (1 - 1e-5) * x_0_paired  # Neighbor's velocity
+        v_u = v_t  # Original velocity: x_1 - x_0
+        v_s = x_1_paired - (1 - 1e-5) * x_0  # Neighbor's velocity with SAME x_0
         
         info['locality_mode'] = 1  # 1 = cluster_neighborhood, 0 = random_perturbation
         info['locality_valid_pairs'] = jnp.mean(valid_pair_mask.astype(jnp.float32))

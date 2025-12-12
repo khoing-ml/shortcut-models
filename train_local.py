@@ -217,7 +217,6 @@ def main(_):
             start_step = train_state.step
         train_state = jax.jit(lambda x : x, out_shardings=train_state_sharding)(train_state)
         print("Loaded model with step", train_state.step)
-        train_state = train_state.replace(step=0)
         jax.debug.visualize_array_sharding(train_state.params['FinalLayer_0']['Dense_0']['kernel'])
         del cp
 
@@ -386,7 +385,7 @@ def main(_):
                 print(f"Step {i}: Logging {len(train_metrics)} metrics to wandb")
                 print(f"Sample metrics: loss={train_metrics.get('training/loss', 'N/A'):.4f}")
                 if wandb.run is not None:
-                    wandb.log(train_metrics, step=i)
+                    wandb.log(train_metrics, step=train_state.step)
                     print(f"Successfully logged to wandb")
                 else:
                     print("WARNING: wandb.run is None, not logging!")
