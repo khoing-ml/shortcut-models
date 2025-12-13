@@ -201,7 +201,7 @@ def main(_):
         del cp
 
     if FLAGS.model.train_type == 'progressive' or FLAGS.model.train_type == 'consistency-distillation':
-        train_state_teacher = jax.jit(lambda x : x, out_shardings=train_state_sharding)(train_state)
+        train_state_teachera = jax.jit(lambda x : x, out_shardings=train_state_sharding)(train_state)
     else:
         train_state_teacher = None
 
@@ -289,12 +289,12 @@ def main(_):
     # Train Loop
     ###################################
 
-    for i in tqdm.tqdm(range(1 + start_step, FLAGS.max_steps + 1 + start_step),
+    for i in tqdm.tqdm(range(start_step, FLAGS.max_steps + start_step),
                        smoothing=0.1,
                        dynamic_ncols=True):
         
         # Sample data.
-        if not FLAGS.debug_overfit or i == 1:
+        if not FLAGS.debug_overfit or i == start_step:
             batch_images, batch_labels = shard_data(*next(dataset))
             if FLAGS.model.use_stable_vae and 'latent' not in FLAGS.dataset_name:
                 vae_rng, vae_key = jax.random.split(vae_rng)
@@ -303,7 +303,7 @@ def main(_):
         # Train update.
         train_state, update_info = update(train_state, train_state_teacher, batch_images, batch_labels)
 
-        if i % FLAGS.log_interval == 0 or i == 1:
+        if i % FLAGS.log_interval == 0 or i == start_step:
             update_info = jax.device_get(update_info)
             update_info = jax.tree_util.tree_map(lambda x: np.array(x), update_info)
             update_info = jax.tree_util.tree_map(lambda x: x.mean(), update_info)
