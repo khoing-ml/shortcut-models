@@ -75,8 +75,8 @@ model_config = ml_collections.ConfigDict({
 
 wandb_config = default_wandb_config()
 wandb_config.update({
-    'project': 'shortcut-local',
-    'name': 'local_{dataset_name}',
+    'project': 'shortcut',
+    'name': 'locality_{dataset_name}',
 })
 
 config_flags.DEFINE_config_dict('wandb', wandb_config, lock_config=False)
