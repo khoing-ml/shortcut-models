@@ -15,12 +15,17 @@ Outputs:
 - `assignments.csv`
 - `examples/cluster_XXXX/` sample images per cluster
 """
+# Fix OpenBLAS threading issues before any numpy/sklearn imports
+import os
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
+os.environ['MKL_NUM_THREADS'] = '1'
+os.environ['OMP_NUM_THREADS'] = '1'
+
 from pathlib import Path
 import argparse
 import csv
 
 import numpy as np
-import os
 
 from sklearn.cluster import MiniBatchKMeans, KMeans
 from tqdm import tqdm
