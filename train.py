@@ -191,8 +191,15 @@ def main(_):
         loaded_params_ema = jax.tree_util.tree_map(fix_loaded_param, train_state.params_ema, loaded_data['params_ema'])
         
         # Now reshard the loaded params to match the current sharding strategy
-        loaded_params = jax.jit(lambda x: x, out_shardings=train_state_sharding.params)(loaded_params)
-        loaded_params_ema = jax.jit(lambda x: x, out_shardings=train_state_sharding.params_ema)(loaded_params_ema)
+        # Check if train_state_sharding is a pytree (FSDP) or a single sharding (DP)
+        if hasattr(train_state_sharding, 'params'):
+            # FSDP mode - sharding is a pytree structure
+            loaded_params = jax.jit(lambda x: x, out_shardings=train_state_sharding.params)(loaded_params)
+            loaded_params_ema = jax.jit(lambda x: x, out_shardings=train_state_sharding.params_ema)(loaded_params_ema)
+        else:
+            # DP mode - sharding is a single NamedSharding, params are replicated
+            loaded_params = jax.jit(lambda x: x, out_shardings=jax.tree_util.tree_map(lambda _: train_state_sharding, loaded_params))(loaded_params)
+            loaded_params_ema = jax.jit(lambda x: x, out_shardings=jax.tree_util.tree_map(lambda _: train_state_sharding, loaded_params_ema))(loaded_params_ema)
         
         train_state = train_state.replace(params=loaded_params, params_ema=loaded_params_ema, step=loaded_data['step'])
         start_step = int(train_state.step.item())
