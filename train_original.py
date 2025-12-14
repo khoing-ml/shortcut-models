@@ -27,7 +27,6 @@ flags.DEFINE_string('dataset_name', 'imagenet256', 'Environment name.')
 flags.DEFINE_string('load_dir', None, 'Logging dir (if not None, save params).')
 flags.DEFINE_string('save_dir', None, 'Logging dir (if not None, save params).')
 flags.DEFINE_string('fid_stats', None, 'FID stats file.')
-flags.DEFINE_string('cluster_dir', None, 'Directory containing cluster assignments from encode_and_cluster.py')
 flags.DEFINE_integer('seed', 10, 'Random seed.') # Must be the same across all processes.
 flags.DEFINE_integer('log_interval', 1000, 'Logging interval.')
 flags.DEFINE_integer('eval_interval', 20000, 'Eval interval.')
@@ -64,19 +63,14 @@ model_config = ml_collections.ConfigDict({
     'bootstrap_every': 8, # Make sure its a divisor of batch size.
     'bootstrap_ema': 1,
     'bootstrap_dt_bias': 0,
-    'train_type': 'shortcut_local', # Use locality-aware loss
-    # Locality-specific parameters
-    'locality_noise_scale': 0.1,  # Scale of noise perturbation for locality constraint
-    'locality_weight': 1.0,  # Weight for locality consistency loss
-    'use_cluster_neighborhoods': False,  # Use cluster-based pairing instead of random perturbation
-    'num_clusters': 500,  # Number of clusters (if using cluster neighborhoods)
+    'train_type': 'shortcut' # or naive.
 })
 
 
 wandb_config = default_wandb_config()
 wandb_config.update({
     'project': 'shortcut',
-    'name': 'locality_{dataset_name}',
+    'name': 'shortcut_{dataset_name}',
 })
 
 config_flags.DEFINE_config_dict('wandb', wandb_config, lock_config=False)
@@ -99,43 +93,14 @@ def main(_):
     print("Device Batch:", local_batch_size // device_count)
 
     # Create wandb logger
-    print(f"Process index: {jax.process_index()}, Mode: {FLAGS.mode}")
     if jax.process_index() == 0 and FLAGS.mode == 'train':
-        print("Initializing wandb...")
-        try:
-            setup_wandb(FLAGS.model.to_dict(), **FLAGS.wandb)
-            print(f"wandb initialized successfully. Run: {wandb.run}")
-            print(f"wandb project: {FLAGS.wandb.project}, name: {FLAGS.wandb.name}")
-        except Exception as e:
-            print(f"wandb initialization failed: {e}")
-            import traceback
-            traceback.print_exc()
+        setup_wandb(FLAGS.model.to_dict(), **FLAGS.wandb)
         
     dataset = get_dataset(FLAGS.dataset_name, local_batch_size, True, FLAGS.debug_overfit)
     dataset_valid = get_dataset(FLAGS.dataset_name, local_batch_size, False, FLAGS.debug_overfit)
     example_obs, example_labels = next(dataset)
     example_obs = example_obs[:1]
     example_obs_shape = example_obs.shape
-    
-    # Load cluster assignments if using cluster neighborhoods
-    cluster_assignment_map = None
-    if FLAGS.model.use_cluster_neighborhoods and FLAGS.cluster_dir is not None:
-        import csv
-        from pathlib import Path
-        assignments_path = Path(FLAGS.cluster_dir) / "assignments.csv"
-        if assignments_path.exists():
-            # Load assignments into a dictionary: image_index -> cluster_id
-            cluster_assignment_map = {}
-            with open(assignments_path, 'r') as f:
-                reader = csv.DictReader(f)
-                for idx, row in enumerate(reader):
-                    # Map by index since we don't have paths in iterator-based datasets
-                    cluster_assignment_map[idx] = int(row['cluster'])
-            print(f"Loaded {len(cluster_assignment_map)} cluster assignments from {assignments_path}")
-            FLAGS.model.num_clusters = max(cluster_assignment_map.values()) + 1
-        else:
-            print(f"Warning: assignments.csv not found at {assignments_path}, using random perturbation")
-            FLAGS.model.use_cluster_neighborhoods = False
 
     if FLAGS.model.use_stable_vae:
         vae = StableVAE.create()
@@ -172,7 +137,7 @@ def main(_):
         'class_dropout_prob': FLAGS.model['class_dropout_prob'],
         'num_classes': FLAGS.model['num_classes'],
         'dropout': FLAGS.model['dropout'],
-        'ignore_dt': False,  # Locality method uses dt like shortcut
+        'ignore_dt': False if (FLAGS.model['train_type'] in ('shortcut', 'livereflow')) else True,
     }
     model_def = DiT(**dit_args)
     tabulate_fn = flax.linen.tabulate(model_def, jax.random.PRNGKey(0))
@@ -213,105 +178,78 @@ def main(_):
         replace_dict = cp.load_as_dict()['train_state']
         del replace_dict['opt_state'] # Debug
         train_state = train_state.replace(**replace_dict)
-        start_step = int(train_state.step.item())
+        if FLAGS.wandb.run_id != "None": # If we are continuing a run.
+            start_step = train_state.step
         train_state = jax.jit(lambda x : x, out_shardings=train_state_sharding)(train_state)
         print("Loaded model with step", train_state.step)
+        train_state = train_state.replace(step=0)
         jax.debug.visualize_array_sharding(train_state.params['FinalLayer_0']['Dense_0']['kernel'])
         del cp
 
-    train_state_teacher = None
+    if FLAGS.model.train_type == 'progressive' or FLAGS.model.train_type == 'consistency-distillation':
+        train_state_teacher = jax.jit(lambda x : x, out_shardings=train_state_sharding)(train_state)
+    else:
+        train_state_teacher = None
 
     visualize_labels = example_labels
     visualize_labels = shard_data(visualize_labels)
     visualize_labels = jax.experimental.multihost_utils.process_allgather(visualize_labels)
     imagenet_labels = open('data/imagenet_labels.txt').read().splitlines()
-    
-    # Create a stateful batch counter for cluster assignment mapping
-    batch_counter = {'count': 0}
 
     ###################################
     # Update Function
     ###################################
 
     @partial(jax.jit, out_shardings=(train_state_sharding, no_shard))
-    def update(train_state, train_state_teacher, images, labels, cluster_assignments=None, force_t=-1, force_dt=-1):
+    def update(train_state, train_state_teacher, images, labels, force_t=-1, force_dt=-1):
         new_rng, targets_key, dropout_key, perm_key = jax.random.split(train_state.rng, 4)
         info = {}
 
         id_perm = jax.random.permutation(perm_key, images.shape[0])
         images = images[id_perm]
         labels = labels[id_perm]
-        # Also permute cluster assignments if provided
-        if cluster_assignments is not None:
-            cluster_assignments = cluster_assignments[id_perm]
         images = jax.lax.with_sharding_constraint(images, data_sharding)
         labels = jax.lax.with_sharding_constraint(labels, data_sharding)
 
         if FLAGS.model['cfg_scale'] == 0: # For unconditional generation.
             labels = jnp.ones(labels.shape[0], dtype=jnp.int32) * FLAGS.model['num_classes']
 
-        # Import and use locality-aware targets
-        from targets_shortcut_LFM_local import get_targets
-        x_t, v_t, t, dt_base, labels_dropped, info = get_targets(
-            FLAGS, targets_key, train_state, images, labels, force_t, force_dt, 
-            cluster_assignments=cluster_assignments
-        )
+        if FLAGS.model['train_type'] == 'naive':
+            from baselines.targets_naive import get_targets
+            x_t, v_t, t, dt_base, labels, info = get_targets(FLAGS, targets_key, train_state, images, labels, force_t, force_dt)
+        elif FLAGS.model['train_type'] == 'shortcut':
+            from targets_shortcut import get_targets
+            x_t, v_t, t, dt_base, labels, info = get_targets(FLAGS, targets_key, train_state, images, labels, force_t, force_dt)
+        elif FLAGS.model['train_type'] == 'progressive':
+            from baselines.targets_progressive import get_targets
+            x_t, v_t, t, dt_base, labels, info = get_targets(FLAGS, targets_key, train_state, train_state_teacher, images, labels, force_t, force_dt)
+        elif FLAGS.model['train_type'] == 'consistency-distillation':
+            from baselines.targets_consistency_distillation import get_targets
+            x_t, v_t, t, dt_base, labels, info = get_targets(FLAGS, targets_key, train_state, train_state_teacher, images, labels, force_t, force_dt)
+        elif FLAGS.model['train_type'] == 'consistency':
+            from baselines.targets_consistency_training import get_targets
+            x_t, v_t, t, dt_base, labels, info = get_targets(FLAGS, targets_key, train_state, images, labels, force_t, force_dt)
+        elif FLAGS.model['train_type'] == 'livereflow':
+            from baselines.targets_livereflow import get_targets
+            x_t, v_t, t, dt_base, labels, info = get_targets(FLAGS, targets_key, train_state, images, labels, force_t, force_dt)
 
         def loss_fn(grad_params):
-            v_prime, logvars, activations = train_state.call_model(x_t, t, dt_base, labels_dropped, train=True, rngs={'dropout': dropout_key}, params=grad_params, return_activations=True)
-            mse_v_base = jnp.mean((v_prime - v_t) ** 2, axis=(1, 2, 3))
-            mse_v = mse_v_base.copy()
-
-            # Initialize locality loss tracking
-            locality_loss_value = 0.0
-            
-            # Add locality consistency loss per-sample
-            if 'locality_u_t' in info and 'locality_s_t' in info:
-                u_t = info['locality_u_t']
-                s_t = info['locality_s_t']
-                locality_weight = info['locality_weight']
-                locality_valid_mask = info.get('locality_valid_mask', None)
-                
-                bootstrap_size = FLAGS.batch_size // FLAGS.model['bootstrap_every']
-                bst_size_data = FLAGS.batch_size - bootstrap_size
-                
-                if bst_size_data > 0:
-                    # Merge locality inputs to match batch ordering: [bootstrap, flow]
-                    u_t_merged = jnp.concatenate([u_t[:bootstrap_size], u_t[bootstrap_size:bootstrap_size+bst_size_data]], axis=0)
-                    s_t_merged = jnp.concatenate([s_t[:bootstrap_size], s_t[bootstrap_size:bootstrap_size+bst_size_data]], axis=0)
-                    
-                    if locality_valid_mask is not None:
-                        valid_mask_merged = jnp.concatenate([locality_valid_mask[:bootstrap_size], locality_valid_mask[bootstrap_size:bootstrap_size+bst_size_data]], axis=0)
-                    else:
-                        valid_mask_merged = jnp.ones(FLAGS.batch_size, dtype=bool)
-                    
-                    # Predict velocities at locality points
-                    v_u_pred, _, _ = train_state.call_model(u_t_merged, t, dt_base, labels_dropped, train=True, rngs={'dropout': dropout_key}, params=grad_params, return_activations=True)
-                    v_s_pred, _, _ = train_state.call_model(s_t_merged, t, dt_base, labels_dropped, train=True, rngs={'dropout': dropout_key}, params=grad_params, return_activations=True)
-                    
-                    # Compute per-sample locality MSE and add to mse_v
-                    locality_mse = jnp.mean((v_u_pred - v_s_pred) ** 2, axis=(1, 2, 3))
-                    locality_mse_masked = jnp.where(valid_mask_merged, locality_mse, 0.0)
-                    locality_loss_value = jnp.mean(locality_mse_masked)
-                    
-                    # Add locality MSE per-sample to mse_v
-                    mse_v = mse_v + locality_weight * locality_mse_masked
-
-            # Now compute loss and split (like train.py)
+            v_prime, logvars, activations = train_state.call_model(x_t, t, dt_base, labels, train=True, rngs={'dropout': dropout_key}, params=grad_params, return_activations=True)
+            mse_v = jnp.mean((v_prime - v_t) ** 2, axis=(1, 2, 3))
             loss = jnp.mean(mse_v)
-            bootstrap_size = FLAGS.batch_size // FLAGS.model['bootstrap_every']
-            
-            loss_info = {
+
+            info = {
                 'loss': loss,
-                'loss_flow': jnp.mean(mse_v[bootstrap_size:]),
-                'loss_bootstrap': jnp.mean(mse_v[:bootstrap_size]),
-                'mse_v_base': jnp.mean(mse_v_base),
-                'locality_loss': locality_loss_value,
                 'v_magnitude_prime': jnp.sqrt(jnp.mean(jnp.square(v_prime))),
                 **{'activations/' + k : jnp.sqrt(jnp.mean(jnp.square(v))) for k, v in activations.items()},
             }
+
+            if FLAGS.model['train_type'] == 'shortcut' or FLAGS.model['train_type'] == 'livereflow':
+                bootstrap_size = FLAGS.batch_size // FLAGS.model['bootstrap_every']
+                info['loss_flow'] = jnp.mean(mse_v[bootstrap_size:])
+                info['loss_bootstrap'] = jnp.mean(mse_v[:bootstrap_size])
             
-            return loss, loss_info
+            return loss, info
         
         grads, new_info = jax.grad(loss_fn, has_aux=True)(train_state.params)
         info = {**info, **new_info}
@@ -347,57 +285,34 @@ def main(_):
             if FLAGS.model.use_stable_vae and 'latent' not in FLAGS.dataset_name:
                 vae_rng, vae_key = jax.random.split(vae_rng)
                 batch_images = vae_encode(vae_key, batch_images)
-            
-            # Get cluster assignments for this batch if using cluster neighborhoods
-            batch_cluster_assignments = None
-            if cluster_assignment_map is not None and FLAGS.model.use_cluster_neighborhoods:
-                # Map batch indices to cluster IDs
-                # Note: This assumes sequential iteration. For more complex datasets,
-                # you may need to store image IDs with the dataset
-                batch_size = batch_images.shape[0]
-                start_idx = batch_counter['count']
-                batch_cluster_ids = []
-                for j in range(batch_size):
-                    idx = (start_idx + j) % len(cluster_assignment_map)
-                    batch_cluster_ids.append(cluster_assignment_map.get(idx, 0))
-                batch_cluster_assignments = shard_data(jnp.array(batch_cluster_ids, dtype=jnp.int32))
-                batch_counter['count'] += batch_size
 
         # Train update.
-        train_state, update_info = update(
-            train_state, train_state_teacher, batch_images, batch_labels, 
-            cluster_assignments=batch_cluster_assignments
-        )
+        train_state, update_info = update(train_state, train_state_teacher, batch_images, batch_labels)
 
         if i % FLAGS.log_interval == 0 or i == 1:
             update_info = jax.device_get(update_info)
-            update_info = jax.tree_util.tree_map(lambda x: np.array(x), update_info)
-            update_info = jax.tree_util.tree_map(lambda x: x.mean(), update_info)
+            update_info = jax.tree_map(lambda x: np.array(x), update_info)
+            update_info = jax.tree_map(lambda x: x.mean(), update_info)
             train_metrics = {f'training/{k}': v for k, v in update_info.items()}
 
             valid_images, valid_labels = shard_data(*next(dataset_valid))
             if FLAGS.model.use_stable_vae and 'latent' not in FLAGS.dataset_name:
                 valid_images = vae_encode(vae_rng, valid_images)
-            # For validation, we can optionally skip cluster assignments or use random assignment
-            _, valid_update_info = update(
-                train_state, train_state_teacher, valid_images, valid_labels, 
-                cluster_assignments=None  # Skip clustering for validation
-            )
+            _, valid_update_info = update(train_state, train_state_teacher, valid_images, valid_labels)
             valid_update_info = jax.device_get(valid_update_info)
-            valid_update_info = jax.tree_util.tree_map(lambda x: x.mean(), valid_update_info)
+            valid_update_info = jax.tree_map(lambda x: x.mean(), valid_update_info)
             train_metrics['training/loss_valid'] = valid_update_info['loss']
 
             if jax.process_index() == 0:
-                print(f"Step {i}: Logging {len(train_metrics)} metrics to wandb")
-                print(f"Sample metrics: loss={train_metrics.get('training/loss', 'N/A'):.4f}")
-                if wandb.run is not None:
-                    wandb.log(train_metrics, step=int(train_state.step.item()))
-                    print(f"Successfully logged to wandb")
-                else:
-                    print("WARNING: wandb.run is None, not logging!")
+                wandb.log(train_metrics, step=i)
+
+        if FLAGS.model['train_type'] == 'progressive':
+            num_sections = np.log2(FLAGS.model['denoise_timesteps']).astype(jnp.int32)
+            if i % (FLAGS.max_steps // num_sections) == 0:
+                train_state_teacher = jax.jit(lambda x : x, out_shardings=train_state_sharding)(train_state)
 
         if i % FLAGS.eval_interval == 0:
-            eval_model(FLAGS, train_state, train_state_teacher, int(train_state.step.item()), dataset, dataset_valid, shard_data, vae_encode, vae_decode, update,
+            eval_model(FLAGS, train_state, train_state_teacher, i, dataset, dataset_valid, shard_data, vae_encode, vae_decode, update,
                        get_fid_activations, imagenet_labels, visualize_labels, 
                        fid_from_stats, truth_fid_stats)
 
