@@ -266,6 +266,10 @@ def main(_):
         def loss_fn(grad_params):
             v_prime, logvars, activations = train_state.call_model(x_t, t, dt_base, labels_dropped, train=True, rngs={'dropout': dropout_key}, params=grad_params, return_activations=True)
             mse_v = jnp.mean((v_prime - v_t) ** 2, axis=(1, 2, 3))
+            
+            # Store base mse_v before adding locality term
+            mse_v_base = mse_v
+            locality_loss = 0.0
 
             # Add locality consistency loss per-sample
             if 'locality_u_t' in info and 'locality_s_t' in info:
@@ -294,6 +298,7 @@ def main(_):
                     # Compute per-sample locality MSE and add to mse_v
                     locality_mse = jnp.mean((v_u_pred - v_s_pred) ** 2, axis=(1, 2, 3))
                     locality_mse_masked = jnp.where(valid_mask_merged, locality_mse, 0.0)
+                    locality_loss = jnp.mean(locality_mse_masked)
                     
                     # Add locality MSE per-sample to mse_v
                     mse_v = mse_v + locality_weight * locality_mse_masked
@@ -306,6 +311,8 @@ def main(_):
                 'loss': loss,
                 'loss_flow': jnp.mean(mse_v[bootstrap_size:]),
                 'loss_bootstrap': jnp.mean(mse_v[:bootstrap_size]),
+                'mse_v_base': jnp.mean(mse_v_base),
+                'locality_loss': locality_loss,
                 'v_magnitude_prime': jnp.sqrt(jnp.mean(jnp.square(v_prime))),
                 **{'activations/' + k : jnp.sqrt(jnp.mean(jnp.square(v))) for k, v in activations.items()},
             }
