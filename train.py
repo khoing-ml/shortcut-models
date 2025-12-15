@@ -54,7 +54,7 @@ model_config = ml_collections.ConfigDict({
     'denoise_timesteps': 128,
     'cfg_scale': 4.0,
     'target_update_rate': 0.999,
-    'use_ema': 0,
+    'use_ema': 1,
     'use_stable_vae': 1,
     'sharding': 'dp', # dp or fsdp.
     't_sampling': 'discrete-dt',
