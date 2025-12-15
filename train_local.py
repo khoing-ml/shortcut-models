@@ -133,9 +133,15 @@ def main(_):
                     cluster_assignment_map[idx] = int(row['cluster'])
             print(f"Loaded {len(cluster_assignment_map)} cluster assignments from {assignments_path}")
             FLAGS.model.num_clusters = max(cluster_assignment_map.values()) + 1
+            print(f"Using cluster neighborhoods with {FLAGS.model.num_clusters} clusters")
         else:
             print(f"Warning: assignments.csv not found at {assignments_path}, using random perturbation")
             FLAGS.model.use_cluster_neighborhoods = False
+    
+    if FLAGS.model.use_cluster_neighborhoods:
+        print(f"Locality mode: Using cluster-based neighborhoods with {FLAGS.model.num_clusters} clusters")
+    else:
+        print(f"Locality mode: Using random noise perturbation (scale={FLAGS.model.locality_noise_scale})")
 
     if FLAGS.model.use_stable_vae:
         vae = StableVAE.create()
