@@ -241,7 +241,7 @@ def eval_model(
     def do_fid_calc(cfg_scale, denoise_timesteps):
         activations = []
         images_shape = batch_images.shape
-        num_generations = 4096
+        num_generations = 50000
         print(f"Calc FID for CFG {cfg_scale} and denoise_timesteps {denoise_timesteps}")
         for fid_it in tqdm.tqdm(range(num_generations // FLAGS.batch_size)):
             key = jax.random.PRNGKey(42)
