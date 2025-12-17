@@ -27,7 +27,7 @@ from tqdm import tqdm
 from utils.datasets import get_dataset
 
 
-def build_imagefolder_dataset(data_dir, image_size=224, batch_size=64, num_workers=4):
+def build_imagefolder_dataset(data_dir, image_size=256, batch_size=64, num_workers=4):
     try:
         import torch
         import torchvision.transforms as T
