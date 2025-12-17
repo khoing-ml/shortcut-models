@@ -223,7 +223,7 @@ def main(_):
         # Skip resharding after loading to avoid shape mismatch errors
         # train_state = jax.jit(lambda x : x, out_shardings=train_state_sharding)(train_state)
         print("Loaded model with step", train_state.step)
-        jax.debug.visualize_array_sharding(train_state.params['FinalLayer_0']['Dense_0']['kernel'])
+        # Skip sharding visualization after loading since arrays are numpy arrays, not JAX arrays
         del cp
 
     train_state_teacher = None
