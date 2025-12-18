@@ -28,7 +28,8 @@ def create_sharding(shard_type, train_state_shape=None):
             if np.prod(shape) * param.dtype.itemsize <= min_size_to_shard_mb * (2 ** 20):
                 return all_nones
             idx = np.argsort(shape)[::-1]
-            for i in idx:
+            for i_idx in range(len(idx)):
+                i = idx[i_idx]
                 if shape[i] % jax.device_count() == 0:
                     return all_nones[:i] + ('devices',) + all_nones[i+1:]
                     # return all_nones[:i] + ('shards',) + all_nones[i+1:]
