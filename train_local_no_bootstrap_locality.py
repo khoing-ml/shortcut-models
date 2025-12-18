@@ -218,6 +218,28 @@ def main(_):
         cp = Checkpoint(FLAGS.load_dir)
         replace_dict = cp.load_as_dict()['train_state']
         del replace_dict['opt_state'] # Debug
+        
+        # Check if parameters have an extra leading dimension and strip it if needed
+        def strip_leading_dim_if_needed(loaded_param, expected_param):
+            # If loaded param has one more dimension at the front with size 1, strip it
+            if len(loaded_param.shape) == len(expected_param.shape) + 1 and loaded_param.shape[0] == 1:
+                return loaded_param[0]
+            return loaded_param
+        
+        # Strip extra dimensions from params and params_ema if they exist
+        if 'params' in replace_dict:
+            replace_dict['params'] = jax.tree_util.tree_map(
+                strip_leading_dim_if_needed, 
+                replace_dict['params'],
+                train_state.params
+            )
+        if 'params_ema' in replace_dict:
+            replace_dict['params_ema'] = jax.tree_util.tree_map(
+                strip_leading_dim_if_needed,
+                replace_dict['params_ema'],
+                train_state.params_ema
+            )
+        
         train_state = train_state.replace(**replace_dict)
         start_step = int(train_state.step.item())
         # Recompute sharding based on the loaded checkpoint's actual shapes
