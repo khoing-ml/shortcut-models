@@ -220,10 +220,15 @@ def main(_):
         del replace_dict['opt_state'] # Debug
         train_state = train_state.replace(**replace_dict)
         start_step = int(train_state.step.item())
+        # Recompute sharding based on the loaded checkpoint's actual shapes
+        loaded_train_state_shape = jax.eval_shape(lambda: train_state)
+        _, train_state_sharding_loaded, _, _, _ = create_sharding(FLAGS.model.sharding, loaded_train_state_shape)
         # Reshard to convert numpy arrays back to JAX arrays with proper sharding
         try:
-            train_state = jax.jit(lambda x : x, out_shardings=train_state_sharding)(train_state)
+            train_state = jax.jit(lambda x : x, out_shardings=train_state_sharding_loaded)(train_state)
             print("Loaded model with step", train_state.step)
+            # Update the main sharding to match what was loaded
+            train_state_sharding = train_state_sharding_loaded
         except Exception as e:
             print(f"Error resharding loaded checkpoint: {e}")
             print("This usually means the model configuration doesn't match the checkpoint.")
