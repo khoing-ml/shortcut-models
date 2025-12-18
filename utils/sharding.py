@@ -33,7 +33,7 @@ def create_sharding(shard_type, train_state_shape=None):
                 if shape[i] % jax.device_count() == 0:
                     return all_nones[:i] + ('devices',) + all_nones[i+1:]
                     # return all_nones[:i] + ('shards',) + all_nones[i+1:]
-            raise ValueError(f"Could not shard parameter of shape {shape}")
+            raise ValueError(f"Could not shard parameter of shape {shape}. No dimension is divisible by {jax.device_count()} devices.")
         train_state_sharding = jax.tree_util.tree_map(
             lambda spec: NamedSharding(mesh, PartitionSpec(*shard_parameter(spec))), 
             flax.linen.unbox(train_state_shape))
