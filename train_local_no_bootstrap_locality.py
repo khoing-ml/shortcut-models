@@ -220,10 +220,16 @@ def main(_):
         del replace_dict['opt_state'] # Debug
         train_state = train_state.replace(**replace_dict)
         start_step = int(train_state.step.item())
-        # Skip resharding after loading to avoid shape mismatch errors
-        # train_state = jax.jit(lambda x : x, out_shardings=train_state_sharding)(train_state)
-        print("Loaded model with step", train_state.step)
-        # Skip sharding visualization after loading since arrays are numpy arrays, not JAX arrays
+        # Reshard to convert numpy arrays back to JAX arrays with proper sharding
+        try:
+            train_state = jax.jit(lambda x : x, out_shardings=train_state_sharding)(train_state)
+            print("Loaded model with step", train_state.step)
+        except Exception as e:
+            print(f"Error resharding loaded checkpoint: {e}")
+            print("This usually means the model configuration doesn't match the checkpoint.")
+            print(f"Current config: hidden_size={FLAGS.model.hidden_size}, patch_size={FLAGS.model.patch_size}, depth={FLAGS.model.depth}")
+            print("Please ensure the model configuration matches the checkpoint you're loading.")
+            raise
         del cp
 
     train_state_teacher = None
