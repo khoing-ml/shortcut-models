@@ -68,6 +68,7 @@ model_config = ml_collections.ConfigDict({
     # Locality-specific parameters
     'locality_noise_scale': 0.1,  # Scale of noise perturbation for locality constraint
     'locality_weight': 1.0,  # Weight for locality consistency loss
+    'locality_every': 4,  # Apply locality loss to 1/locality_every of samples (e.g., 4 means 1/4 of batch)
     'use_cluster_neighborhoods': False,  # Use cluster-based pairing instead of random perturbation
     'num_clusters': 500,  # Number of clusters (if using cluster neighborhoods)
 })
@@ -305,7 +306,7 @@ def main(_):
             mse_v_base = mse_v
             locality_loss = 0.0
 
-            # Add locality consistency loss per-sample ONLY for flow-matching samples (not bootstrap)
+            # Add locality consistency loss per-sample ONLY to a subset of samples
             if 'locality_u_t' in info and 'locality_s_t' in info:
                 u_t = info['locality_u_t']
                 s_t = info['locality_s_t']
@@ -313,54 +314,63 @@ def main(_):
                 locality_valid_mask = info.get('locality_valid_mask', None)
                 
                 bootstrap_size = FLAGS.batch_size // FLAGS.model['bootstrap_every']
-                bst_size_data = FLAGS.batch_size - bootstrap_size
+                # Calculate how many samples get locality loss applied
+                locality_size = FLAGS.batch_size // FLAGS.model['locality_every']
                 
-                if bst_size_data > 0:
-                    # Only use locality data for flow-matching portion (skip bootstrap)
-                    # The locality data corresponds to the original full batch, so we need:
-                    # - Skip first bootstrap_size entries in the locality data
-                    # - Use only the flow-matching portion (bst_size_data entries)
-                    u_t_flow = u_t[bootstrap_size:bootstrap_size+bst_size_data]
-                    s_t_flow = s_t[bootstrap_size:bootstrap_size+bst_size_data]
+                # We have 3 portions in the batch:
+                # 1. [0:bootstrap_size] - Bootstrap samples (self-distillation)
+                # 2. [bootstrap_size:bootstrap_size+locality_size] - Flow samples WITH locality loss
+                # 3. [bootstrap_size+locality_size:] - Flow samples WITHOUT locality loss
+                
+                if locality_size > 0:
+                    # Only use locality data for the locality portion
+                    # Skip bootstrap samples and only take locality_size samples from flow portion
+                    u_t_locality = u_t[bootstrap_size:bootstrap_size+locality_size]
+                    s_t_locality = s_t[bootstrap_size:bootstrap_size+locality_size]
                     
                     if locality_valid_mask is not None:
-                        valid_mask_flow = locality_valid_mask[bootstrap_size:bootstrap_size+bst_size_data]
+                        valid_mask_locality = locality_valid_mask[bootstrap_size:bootstrap_size+locality_size]
                     else:
-                        valid_mask_flow = jnp.ones(bst_size_data, dtype=bool)
+                        valid_mask_locality = jnp.ones(locality_size, dtype=bool)
                     
-                    # Predict velocities at locality points for flow-matching samples only
-                    # Need to match the batch structure: we want to predict for the flow portion
-                    # In the merged batch, flow samples are at indices [bootstrap_size:]
-                    t_flow = t[bootstrap_size:]
-                    dt_base_flow = dt_base[bootstrap_size:]
-                    labels_flow = labels_dropped[bootstrap_size:]
+                    # Predict velocities at locality points for the locality subset only
+                    # These correspond to batch indices [bootstrap_size:bootstrap_size+locality_size]
+                    t_locality = t[bootstrap_size:bootstrap_size+locality_size]
+                    dt_base_locality = dt_base[bootstrap_size:bootstrap_size+locality_size]
+                    labels_locality = labels_dropped[bootstrap_size:bootstrap_size+locality_size]
                     
-                    v_u_pred, _, _ = train_state.call_model(u_t_flow, t_flow, dt_base_flow, labels_flow, train=True, rngs={'dropout': dropout_key}, params=grad_params, return_activations=True)
-                    v_s_pred, _, _ = train_state.call_model(s_t_flow, t_flow, dt_base_flow, labels_flow, train=True, rngs={'dropout': dropout_key}, params=grad_params, return_activations=True)
+                    v_u_pred, _, _ = train_state.call_model(u_t_locality, t_locality, dt_base_locality, labels_locality, train=True, rngs={'dropout': dropout_key}, params=grad_params, return_activations=True)
+                    v_s_pred, _, _ = train_state.call_model(s_t_locality, t_locality, dt_base_locality, labels_locality, train=True, rngs={'dropout': dropout_key}, params=grad_params, return_activations=True)
                     
                     # Compute per-sample locality MSE
                     locality_mse = jnp.mean((v_u_pred - v_s_pred) ** 2, axis=(1, 2, 3))
-                    locality_mse_masked = jnp.where(valid_mask_flow, locality_mse, 0.0)
+                    locality_mse_masked = jnp.where(valid_mask_locality, locality_mse, 0.0)
                     locality_loss = jnp.mean(locality_mse_masked)
                     
-                    # Add locality MSE per-sample ONLY to flow-matching portion of mse_v
-                    # Create a zero array for bootstrap portion and locality mse for flow portion
+                    # Add locality MSE per-sample ONLY to the locality subset
+                    # Batch structure: [bootstrap (no locality) | locality subset (with locality) | remaining flow (no locality)]
+                    remaining_flow_size = FLAGS.batch_size - bootstrap_size - locality_size
                     locality_contribution = jnp.concatenate([
-                        jnp.zeros(bootstrap_size),  # No locality loss for bootstrap
-                        locality_weight * locality_mse_masked  # Locality loss for flow-matching
+                        jnp.zeros(bootstrap_size),  # No locality loss for bootstrap samples
+                        locality_weight * locality_mse_masked,  # Locality loss for locality subset
+                        jnp.zeros(remaining_flow_size)  # No locality loss for remaining flow samples
                     ], axis=0)
                     mse_v = mse_v + locality_contribution
 
             # Now compute loss and split (like train.py)
             loss = jnp.mean(mse_v)
             bootstrap_size = FLAGS.batch_size // FLAGS.model['bootstrap_every']
+            locality_size = FLAGS.batch_size // FLAGS.model['locality_every']
             
             loss_info = {
                 'loss': loss,
                 'loss_flow': jnp.mean(mse_v[bootstrap_size:]),
                 'loss_bootstrap': jnp.mean(mse_v[:bootstrap_size]),
+                'loss_locality_subset': jnp.mean(mse_v[bootstrap_size:bootstrap_size+locality_size]),
+                'loss_flow_no_locality': jnp.mean(mse_v[bootstrap_size+locality_size:]),
                 'mse_v_base': jnp.mean(mse_v_base),
                 'locality_loss': locality_loss,
+                'locality_ratio': locality_size / FLAGS.batch_size,
                 'v_magnitude_prime': jnp.sqrt(jnp.mean(jnp.square(v_prime))),
                 **{'activations/' + k : jnp.sqrt(jnp.mean(jnp.square(v))) for k, v in activations.items()},
             }
