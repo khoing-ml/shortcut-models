@@ -9,6 +9,10 @@ Reads the output from encode_and_cluster.py and creates visualizations:
 
 Example:
   python visualize_clusters.py --cluster-dir encode_cluster_out --max-per-cluster 16 --output-dir cluster_viz
+  
+  # For dataset iterator mode (with latent decoding):
+  python visualize_clusters.py --cluster-dir encode_cluster_out --output-dir cluster_viz \
+    --use-latents --dataset-name celebahq256
 """
 import argparse
 import csv
@@ -31,6 +35,57 @@ except ImportError:
     Image = None
 
 
+def load_vae_and_dataset(dataset_name, batch_size=64):
+    """Load VAE decoder and dataset iterator for latent decoding."""
+    try:
+        import jax
+        import jax.numpy as jnp
+        from utils.stable_vae import StableVAE
+        from utils.datasets import get_dataset
+    except ImportError as e:
+        raise ImportError("JAX and project utils are required for latent decoding") from e
+    
+    vae = StableVAE.create()
+    vae_decode = jax.jit(vae.decode)
+    
+    # Load dataset iterator
+    dataset_iter = get_dataset(dataset_name, batch_size, is_train=True, debug_overfit=False)
+    
+    return vae, vae_decode, dataset_iter
+
+
+def decode_latent_to_image(vae_decode, latent, image_size=(256, 256)):
+    """Decode a single latent to an image array."""
+    try:
+        import jax.numpy as jnp
+    except ImportError:
+        raise ImportError("JAX is required for latent decoding")
+    
+    # latent shape should be (lh, lw, 4), need to add batch dimension
+    if latent.ndim == 1:
+        # Assume 64x64x4 latent space for 512x512 images, or 32x32x4 for 256x256
+        if image_size[0] == 512:
+            latent = latent.reshape(64, 64, 4)
+        else:  # 256x256
+            latent = latent.reshape(32, 32, 4)
+    
+    latent_batch = jnp.array(latent[None, ...])  # Add batch dimension
+    decoded = vae_decode(latent_batch, scale=True)  # Output shape: (1, h, w, 3)
+    decoded_np = np.array(decoded[0])  # Remove batch dimension
+    
+    # Convert from [-1, 1] to [0, 255]
+    image = ((decoded_np + 1) * 127.5).clip(0, 255).astype(np.uint8)
+    
+    # Resize if needed
+    if image.shape[:2] != image_size:
+        if Image is not None:
+            image_pil = Image.fromarray(image)
+            image_pil = image_pil.resize(image_size, Image.Resampling.LANCZOS)
+            image = np.array(image_pil)
+    
+    return image
+
+
 def load_assignments(csv_path):
     """Load cluster assignments from CSV file."""
     assignments = {}
@@ -51,11 +106,31 @@ def group_by_cluster(assignments):
     return clusters
 
 
-def load_image(image_path, size=(128, 128)):
-    """Load and resize an image."""
+def load_image(image_path, size=(128, 128), latents=None, vae_decode=None, path_to_index=None):
+    """Load and resize an image.
+    
+    Args:
+        image_path: Path to image file or synthetic path like "sample_0"
+        size: Target size for the image
+        latents: Optional latents array for decoding
+        vae_decode: Optional VAE decoder function
+        path_to_index: Optional mapping from path to index in latents array
+    """
     if Image is None:
         raise ImportError("PIL is required for image loading")
     
+    # Check if this is a synthetic path (e.g., "sample_0") and we have latents
+    if latents is not None and vae_decode is not None and path_to_index is not None:
+        if image_path in path_to_index:
+            idx = path_to_index[image_path]
+            latent = latents[idx]
+            try:
+                return decode_latent_to_image(vae_decode, latent, image_size=size)
+            except Exception as e:
+                print(f"Warning: Could not decode latent for {image_path}: {e}")
+                return np.zeros((*size, 3), dtype=np.uint8)
+    
+    # Otherwise, try to load as a regular image file
     try:
         img = Image.open(image_path)
         img = img.convert('RGB')
@@ -68,7 +143,7 @@ def load_image(image_path, size=(128, 128)):
 
 
 def visualize_cluster_grid(cluster_id, image_paths, max_images=16, image_size=(128, 128), 
-                          data_dir=None, output_path=None):
+                          data_dir=None, output_path=None, latents=None, vae_decode=None, path_to_index=None):
     """Create a grid visualization for a single cluster."""
     if plt is None:
         raise ImportError("matplotlib is required for visualization")
@@ -100,7 +175,8 @@ def visualize_cluster_grid(cluster_id, image_paths, max_images=16, image_size=(1
             else:
                 full_path = Path(img_path)
             
-            img = load_image(full_path, size=image_size)
+            img = load_image(full_path, size=image_size, latents=latents, 
+                           vae_decode=vae_decode, path_to_index=path_to_index)
             ax.imshow(img)
             ax.axis('off')
         else:
@@ -116,7 +192,8 @@ def visualize_cluster_grid(cluster_id, image_paths, max_images=16, image_size=(1
 
 
 def visualize_all_clusters_overview(clusters, data_dir=None, output_path=None, 
-                                     samples_per_cluster=4, image_size=(64, 64)):
+                                     samples_per_cluster=4, image_size=(64, 64),
+                                     latents=None, vae_decode=None, path_to_index=None):
     """Create an overview visualization showing samples from all clusters."""
     if plt is None:
         raise ImportError("matplotlib is required for visualization")
@@ -146,7 +223,8 @@ def visualize_all_clusters_overview(clusters, data_dir=None, output_path=None,
                 else:
                     full_path = Path(img_path)
                 
-                img = load_image(full_path, size=image_size)
+                img = load_image(full_path, size=image_size, latents=latents,
+                               vae_decode=vae_decode, path_to_index=path_to_index)
                 ax.imshow(img)
             
             ax.axis('off')
@@ -326,8 +404,8 @@ def parse_args():
     p.add_argument("--image-size", type=int, default=256, help="Size to display images (width and height)")
     p.add_argument("--overview-samples", type=int, default=4, help="Number of samples per cluster in overview")
     p.add_argument("--generate-html", action="store_true", help="Generate an HTML report")
-    p.add_argument("--specific-clusters", type=int, nargs='+', help="Visualize only specific cluster IDs")
-    return p.parse_args()
+    p.add_argument("--specific-clusters", type=int, nargs='+', help="Visualize only specific cluster IDs")    p.add_argument("--use-latents", action="store_true", help="Decode images from latents (for dataset iterator mode)")
+    p.add_argument("--dataset-name", default=None, help="Dataset name (required if --use-latents is set)")    return p.parse_args()
 
 
 def main():
@@ -348,6 +426,34 @@ def main():
     clusters = group_by_cluster(assignments)
     
     print(f"Found {len(clusters)} clusters with {len(assignments)} total images")
+    
+    # Load latents and VAE if needed
+    latents = None
+    vae_decode = None
+    path_to_index = None
+    
+    if args.use_latents:
+        if args.dataset_name is None:
+            print("Error: --dataset-name is required when using --use-latents")
+            return
+        
+        # Load latents
+        latents_path = Path(args.cluster_dir) / "latents.npy"
+        if not latents_path.exists():
+            print(f"Error: latents.npy not found in {args.cluster_dir}")
+            return
+        
+        print(f"Loading latents from {latents_path}...")
+        latents = np.load(latents_path)
+        print(f"Loaded latents with shape {latents.shape}")
+        
+        # Create path to index mapping
+        path_to_index = {path: idx for idx, path in enumerate(assignments.keys())}
+        
+        # Load VAE decoder
+        print(f"Loading VAE decoder for dataset {args.dataset_name}...")
+        vae, vae_decode, _ = load_vae_and_dataset(args.dataset_name)
+        print("VAE loaded successfully")
     
     # Generate statistics
     stats_path = output_dir / "cluster_statistics.txt"
@@ -378,7 +484,10 @@ def main():
             max_images=args.max_per_cluster,
             image_size=(args.image_size, args.image_size),
             data_dir=args.data_dir,
-            output_path=output_path
+            output_path=output_path,
+            latents=latents,
+            vae_decode=vae_decode,
+            path_to_index=path_to_index
         )
         print(f"saved to {output_path}")
     
@@ -391,7 +500,10 @@ def main():
             data_dir=args.data_dir,
             output_path=overview_path,
             samples_per_cluster=args.overview_samples,
-            image_size=(args.image_size // 2, args.image_size // 2)
+            image_size=(args.image_size // 2, args.image_size // 2),
+            latents=latents,
+            vae_decode=vae_decode,
+            path_to_index=path_to_index
         )
         print(f"Saved overview to {overview_path}")
     elif len(clusters) > 50:
