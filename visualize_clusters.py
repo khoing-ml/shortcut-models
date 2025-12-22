@@ -119,15 +119,18 @@ def load_image(image_path, size=(128, 128), latents=None, vae_decode=None, path_
     if Image is None:
         raise ImportError("PIL is required for image loading")
     
+    # Convert Path object to string for lookup
+    path_str = str(image_path)
+    
     # Check if this is a synthetic path (e.g., "sample_0") and we have latents
     if latents is not None and vae_decode is not None and path_to_index is not None:
-        if image_path in path_to_index:
-            idx = path_to_index[image_path]
+        if path_str in path_to_index:
+            idx = path_to_index[path_str]
             latent = latents[idx]
             try:
                 return decode_latent_to_image(vae_decode, latent, image_size=size)
             except Exception as e:
-                print(f"Warning: Could not decode latent for {image_path}: {e}")
+                print(f"Warning: Could not decode latent for {path_str}: {e}")
                 return np.zeros((*size, 3), dtype=np.uint8)
     
     # Otherwise, try to load as a regular image file
