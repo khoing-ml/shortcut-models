@@ -46,7 +46,8 @@ def load_vae_and_dataset(dataset_name, batch_size=64):
         raise ImportError("JAX and project utils are required for latent decoding") from e
     
     vae = StableVAE.create()
-    vae_decode = jax.jit(vae.decode)
+    # Use the decode method directly - it's already jitted with static_argnames in the class
+    vae_decode = vae.decode
     
     # Load dataset iterator
     dataset_iter = get_dataset(dataset_name, batch_size, is_train=True, debug_overfit=False)
