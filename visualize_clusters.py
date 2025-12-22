@@ -172,13 +172,8 @@ def visualize_cluster_grid(cluster_id, image_paths, max_images=16, image_size=(1
         
         if i < n_images:
             img_path = image_paths[i]
-            # If data_dir is provided and path is relative, join them
-            if data_dir and not Path(img_path).is_absolute():
-                full_path = Path(data_dir) / img_path
-            else:
-                full_path = Path(img_path)
-            
-            img = load_image(full_path, size=image_size, latents=latents, 
+            # Pass the original string path for latent lookup
+            img = load_image(img_path, size=image_size, latents=latents, 
                            vae_decode=vae_decode, path_to_index=path_to_index)
             ax.imshow(img)
             ax.axis('off')
@@ -221,12 +216,8 @@ def visualize_all_clusters_overview(clusters, data_dir=None, output_path=None,
             
             if col < len(image_paths):
                 img_path = image_paths[col]
-                if data_dir and not Path(img_path).is_absolute():
-                    full_path = Path(data_dir) / img_path
-                else:
-                    full_path = Path(img_path)
-                
-                img = load_image(full_path, size=image_size, latents=latents,
+                # Pass the original string path for latent lookup
+                img = load_image(img_path, size=image_size, latents=latents,
                                vae_decode=vae_decode, path_to_index=path_to_index)
                 ax.imshow(img)
             
