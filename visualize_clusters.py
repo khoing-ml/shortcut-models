@@ -404,8 +404,10 @@ def parse_args():
     p.add_argument("--image-size", type=int, default=256, help="Size to display images (width and height)")
     p.add_argument("--overview-samples", type=int, default=4, help="Number of samples per cluster in overview")
     p.add_argument("--generate-html", action="store_true", help="Generate an HTML report")
-    p.add_argument("--specific-clusters", type=int, nargs='+', help="Visualize only specific cluster IDs")    p.add_argument("--use-latents", action="store_true", help="Decode images from latents (for dataset iterator mode)")
-    p.add_argument("--dataset-name", default=None, help="Dataset name (required if --use-latents is set)")    return p.parse_args()
+    p.add_argument("--specific-clusters", type=int, nargs='+', help="Visualize only specific cluster IDs")   
+    p.add_argument("--use-latents", action="store_true", help="Decode images from latents (for dataset iterator mode)")
+    p.add_argument("--dataset-name", default=None, help="Dataset name (required if --use-latents is set)")    
+    return p.parse_args()
 
 
 def main():
